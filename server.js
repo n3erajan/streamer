@@ -412,7 +412,7 @@ function getYouTubeStreamUrl(videoId) {
   const cookiesFile = path.join(__dirname, 'cookies.txt')
   const cookieArgs = fs.existsSync(cookiesFile)
     ? ['--cookies', cookiesFile]
-    : []
+    : ['--cookies-from-browser', BROWSER_FOR_COOKIES]
 
   return new Promise((resolve, reject) => {
     execFile(
@@ -422,6 +422,7 @@ function getYouTubeStreamUrl(videoId) {
         '-g',
         '--no-warnings',
         '--no-playlist',
+        '--js-runtimes', 'node',
         ...cookieArgs,
         `https://www.youtube.com/watch?v=${videoId}`,
       ],
