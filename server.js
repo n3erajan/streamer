@@ -343,82 +343,14 @@ async function innertubeNext(videoId, continuationToken = null) {
   return { results, continuationToken: nextToken }
 }
 
-// Player via InnerTube — returns { info, streamUrl } or throws
-// Strategy: WEB client for info (most reliable), extract stream URLs from response
-async function innertubePlayer(videoId) {
-  // Try multiple client types for best results
-  const clients = [
-    { name: 'WEB', context: INNERTUBE_WEB_CONTEXT },
-    {
-      name: 'IOS',
-      context: {
-        client: {
-          clientName: 'IOS',
-          clientVersion: '19.45.4',
-          deviceMake: 'Apple',
-          deviceModel: 'iPhone16,2',
-          osName: 'iOS',
-          osVersion: '17.6.1',
-          hl: 'en',
-          gl: 'US',
-        },
-      },
-    },
-  ]
-
-  let lastError = null
-  for (const { name, context, extra } of clients) {
-    try {
-      const data = await innertubeFetch('player', {
-        context,
-        videoId,
-        contentCheckOk: true,
-        racyCheckOk: true,
-        ...(extra || {}),
-      })
-
-      const status = data?.playabilityStatus?.status
-      if (status && status !== 'OK') {
-        lastError = new Error(
-          `${name}: ${status} — ${data?.playabilityStatus?.reason || 'blocked'}`,
-        )
-        continue
-      }
-
-      const details = data?.videoDetails
-      if (!details) {
-        lastError = new Error(`${name}: no videoDetails`)
-        continue
-      }
-
-      const info = {
-        title: details.title || 'YouTube Video',
-        thumbnail:
-          details.thumbnail?.thumbnails?.slice(-1)?.[0]?.url ||
-          ytThumb(videoId),
-        duration: parseInt(details.lengthSeconds) || 0,
-        channel: details.author || '',
-        description: (details.shortDescription || '').substring(0, 300),
-      }
-
-      // Extract best combined (audio+video) MP4 stream URL
-      let streamUrl = null
-      const combined = (data?.streamingData?.formats || [])
-        .filter((f) => f.url && f.mimeType?.startsWith('video/mp4'))
-        .sort((a, b) => (b.width || 0) - (a.width || 0))
-
-      if (combined.length > 0) {
-        streamUrl = combined[0].url
-      }
-
-      return { info, streamUrl }
-    } catch (e) {
-      lastError = e
-    }
-  }
-
-  throw lastError || new Error('All InnerTube player clients failed')
-}
+// NOTE: an earlier `innertubePlayer()` (raw InnerTube /player POST, no JS
+// challenge/PO-token solving) lived here. It reliably returned HTTP 400 on
+// real traffic because YouTube now requires a solved JS/PO-token challenge
+// for player responses on most videos — there was nothing to "fix" in it,
+// the approach itself is no longer viable without a challenge solver.
+// Removed rather than left as unused dead code. Stream URLs are now sourced
+// from yt-dlp only (see getYouTubeStreamUrl below), which has its own
+// challenge-solving built in and stays current via auto-update.
 
 // ═══════════════════════════════════════════════════════════════
 //  Public API functions — InnerTube /next for info, yt-dlp for streams
@@ -522,18 +454,36 @@ function getYouTubeInfo(videoId) {
   return getVideoPageData(videoId).then((d) => d.info)
 }
 
-async function getYouTubeStreamUrl(videoId) {
-  const cached = ytStreamCache.get(videoId)
-  if (cached && cached.expires > Date.now()) return cached.url
+// Format chain tried by yt-dlp itself, in order, via its built-in '/' fallback syntax:
+//   1. b[ext=mp4]                  - progressive mp4 (one file, video+audio) — ideal, simplest to proxy
+//   2. b                            - progressive, any container
+//   3. bv*[ext=mp4]+ba[ext=m4a]    - separate DASH video+audio (mp4/m4a) — yt-dlp prints TWO urls for this
+//   4. best                         - absolute last resort, whatever's available
+//
+// Why this matters: the old selector was ONLY #1 with no fallback. YouTube
+// has been increasingly inconsistent about handing out progressive mp4 for
+// a given video/session — when it doesn't, yt-dlp errored out immediately
+// ("Requested format is not available") instead of trying anything else.
+// That inconsistency, not a code bug, is most of why it "works sometimes."
+//
+// KNOWN LIMITATION: if it falls through to #3, getYouTubeStreamUrl returns
+// both a video and an audio URL, but the /youtube-stream proxy route below
+// only forwards `streamUrls.video` — so on that fallback tier you'd get
+// picture with no sound. Logged loudly (not silently) when it happens so
+// it's visible instead of mysterious. Ask if you want the proxy extended to
+// mux the two with ffmpeg on the fly; that's a separate, larger change.
+const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 
+function runYtDlpForStreamUrl(videoId, { timeout = 20000 } = {}) {
   return new Promise((resolve, reject) => {
-    const args = ['-f', 'b[ext=mp4]/b', '-g', '--no-warnings', '--no-playlist']
+    const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
     if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
     args.push(`https://www.youtube.com/watch?v=${videoId}`)
+
     execFile(
       YT_DLP,
       args,
-      { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
+      { maxBuffer: 10 * 1024 * 1024, timeout },
       (err, stdout, stderr) => {
         if (err) {
           const stderrMsg = (stderr || '').slice(0, 500)
@@ -545,24 +495,106 @@ async function getYouTubeStreamUrl(videoId) {
           .trim()
           .split('\n')
           .filter((l) => l.startsWith('http'))
-        if (urls.length === 0) {
-          return reject(new Error('No stream URL found'))
+        if (urls.length === 0) return reject(new Error('No stream URL found'))
+        if (urls.length > 1) {
+          console.warn(
+            `[yt-stream] ${videoId}: only got separate video+audio streams ` +
+              `(progressive mp4 unavailable this time). Proxy currently only ` +
+              `serves the video URL — audio will be missing for this request.`,
+          )
         }
-        const result = {
-          video: urls[0],
-          audio: urls.length > 1 ? urls[1] : null,
-        }
-        ytStreamCache.set(videoId, {
-          url: result,
-          expires: Date.now() + 15 * 60 * 1000,
-        })
-        console.log(
-          `[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`,
-        )
-        resolve(result)
+        resolve({ video: urls[0], audio: urls.length > 1 ? urls[1] : null })
       },
     )
   })
+}
+
+// YouTube's signature/N-challenge logic changes often; a yt-dlp binary that
+// hasn't self-updated in a while is one of the most common real causes of
+// sudden "Requested format is not available" / extraction failures on a
+// server that isn't rebuilt regularly (unlike a dev machine you update by
+// hand). We attempt this at most once per process, only when failures look
+// like that specific symptom rather than an auth/cookie problem.
+let ytDlpUpdateAttempted = false
+function tryUpdateYtDlp() {
+  if (ytDlpUpdateAttempted) return Promise.resolve(false)
+  ytDlpUpdateAttempted = true
+  return new Promise((resolve) => {
+    console.log(
+      '[yt-stream] Stale-binary symptoms detected — running yt-dlp -U once...',
+    )
+    execFile(YT_DLP, ['-U'], { timeout: 30000 }, (err, stdout, stderr) => {
+      if (err) {
+        console.warn(
+          `[yt-stream] yt-dlp self-update failed: ${(stderr || err.message).slice(0, 300)}`,
+        )
+        return resolve(false)
+      }
+      console.log(`[yt-stream] yt-dlp -U: ${stdout.trim().slice(0, 300)}`)
+      resolve(true)
+    })
+  })
+}
+
+async function getYouTubeStreamUrl(videoId) {
+  const cached = ytStreamCache.get(videoId)
+  if (cached && cached.expires > Date.now()) return cached.url
+
+  const cacheAndReturn = (result) => {
+    ytStreamCache.set(videoId, {
+      url: result,
+      expires: Date.now() + 15 * 60 * 1000,
+    })
+    console.log(
+      `[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`,
+    )
+    return result
+  }
+
+  let lastErr
+
+  // Attempt 1
+  try {
+    return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
+  } catch (e) {
+    lastErr = e
+    console.warn(
+      `[yt-stream] Attempt 1 failed for ${videoId}: ${e.message.slice(0, 200)}`,
+    )
+  }
+
+  // Attempt 2 — plain retry. Both the bot-check and format-availability
+  // failures are sometimes transient per-request rather than per-video.
+  try {
+    return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
+  } catch (e) {
+    lastErr = e
+    console.warn(
+      `[yt-stream] Attempt 2 (retry) failed for ${videoId}: ${e.message.slice(0, 200)}`,
+    )
+  }
+
+  // Attempt 3 — if this smells like a stale-binary problem specifically
+  // (not a cookie/auth problem), try updating yt-dlp once, then retry.
+  const looksStale =
+    /Requested format is not available|Unable to extract|unsupported url/i.test(
+      lastErr.message,
+    )
+  if (looksStale) {
+    const updated = await tryUpdateYtDlp()
+    if (updated) {
+      try {
+        return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
+      } catch (e) {
+        lastErr = e
+        console.error(
+          `[yt-stream] Still failing for ${videoId} after self-update: ${e.message.slice(0, 200)}`,
+        )
+      }
+    }
+  }
+
+  throw lastErr
 }
 
 // Shared helper: cross-populate info cache from search results
