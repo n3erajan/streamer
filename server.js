@@ -477,7 +477,10 @@ const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 function runYtDlpForStreamUrl(videoId, { timeout = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
-    if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
+    // NOTE: Do NOT pass cookies for stream extraction. Logged-in session
+    // cookies cause yt-dlp to switch to the web_safari client, which
+    // YouTube restricts to storyboard-only responses (no video/audio
+    // formats). Without cookies yt-dlp uses android_vr which works.
     args.push(`https://www.youtube.com/watch?v=${videoId}`)
 
     execFile(
