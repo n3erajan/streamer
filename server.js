@@ -112,16 +112,21 @@ async function innertubeFetch(endpoint, body, opts = {}) {
   const timeout = setTimeout(() => controller.abort(), opts.timeout || 15000)
   const headers = {
     'Content-Type': 'application/json',
-    'User-Agent': opts.userAgent || 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+    'User-Agent':
+      opts.userAgent ||
+      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
   }
   if (opts.cookieHeader) headers['Cookie'] = opts.cookieHeader
   try {
-    const res = await fetch(`${INNERTUBE_BASE}/${endpoint}?key=${INNERTUBE_API_KEY}&prettyPrint=false`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const res = await fetch(
+      `${INNERTUBE_BASE}/${endpoint}?key=${INNERTUBE_API_KEY}&prettyPrint=false`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      },
+    )
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return await res.json()
   } finally {
@@ -522,27 +527,41 @@ async function getYouTubeStreamUrl(videoId) {
   if (cached && cached.expires > Date.now()) return cached.url
 
   return new Promise((resolve, reject) => {
-    const args = [
-      '-f', 'b[ext=mp4]/b',
-      '-g', '--no-warnings', '--no-playlist',
-    ]
+    const args = ['-f', 'b[ext=mp4]/b', '-g', '--no-warnings', '--no-playlist']
+    if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
     args.push(`https://www.youtube.com/watch?v=${videoId}`)
-    execFile(YT_DLP, args, { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
-    (err, stdout, stderr) => {
-      if (err) {
-        const stderrMsg = (stderr || '').slice(0, 500)
-        if (stderrMsg) console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
-        return reject(new Error(stderrMsg || err.message))
-      }
-      const urls = stdout.trim().split('\n').filter(l => l.startsWith('http'))
-      if (urls.length === 0) {
-        return reject(new Error('No stream URL found'))
-      }
-      const result = { video: urls[0], audio: urls.length > 1 ? urls[1] : null }
-      ytStreamCache.set(videoId, { url: result, expires: Date.now() + 15 * 60 * 1000 })
-      console.log(`[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`)
-      resolve(result)
-    })
+    execFile(
+      YT_DLP,
+      args,
+      { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const stderrMsg = (stderr || '').slice(0, 500)
+          if (stderrMsg)
+            console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
+          return reject(new Error(stderrMsg || err.message))
+        }
+        const urls = stdout
+          .trim()
+          .split('\n')
+          .filter((l) => l.startsWith('http'))
+        if (urls.length === 0) {
+          return reject(new Error('No stream URL found'))
+        }
+        const result = {
+          video: urls[0],
+          audio: urls.length > 1 ? urls[1] : null,
+        }
+        ytStreamCache.set(videoId, {
+          url: result,
+          expires: Date.now() + 15 * 60 * 1000,
+        })
+        console.log(
+          `[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`,
+        )
+        resolve(result)
+      },
+    )
   })
 }
 
@@ -592,11 +611,11 @@ async function searchYouTube(query, continuationToken = null) {
   // Fallback to yt-dlp (~10-15s)
   return new Promise((resolve, reject) => {
     const searchArgs = [
-        '--dump-json',
-        '--no-warnings',
-        '--flat-playlist',
-        '--no-check-formats',
-      ]
+      '--dump-json',
+      '--no-warnings',
+      '--flat-playlist',
+      '--no-check-formats',
+    ]
     if (COOKIES_PATH) searchArgs.push('--cookies', COOKIES_PATH)
     searchArgs.push(`ytsearch30:${query}`)
     execFile(
@@ -1516,7 +1535,12 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
     res.status(upstream.status)
 
     // Forward relevant headers
-    const fwd = ['content-type', 'content-length', 'content-range', 'accept-ranges']
+    const fwd = [
+      'content-type',
+      'content-length',
+      'content-range',
+      'accept-ranges',
+    ]
     for (const h of fwd) {
       const val = upstream.headers.get(h)
       if (val) res.setHeader(h, val)
@@ -1553,5 +1577,4 @@ app.listen(PORT, async () => {
   console.log(`Serving from: ${MOVIES_DIR}`)
   const movies = await scanMovies()
   console.log(`${movies.length} movie(s) found`)
-
 })
