@@ -27,7 +27,8 @@ function formatDuration(sec) {
   const h = Math.floor(sec / 3600)
   const m = Math.floor((sec % 3600) / 60)
   const s = Math.floor(sec % 60)
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  if (h > 0)
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
@@ -75,7 +76,8 @@ async function innertubeFetch(endpoint, body) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+        'User-Agent':
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -95,7 +97,6 @@ function parseDurationText(text) {
   return parts[0] || 0
 }
 
-
 // Search via InnerTube — returns { results, continuationToken }
 async function innertubeSearch(query, continuationToken = null) {
   const body = { context: INNERTUBE_WEB_CONTEXT }
@@ -109,9 +110,13 @@ async function innertubeSearch(query, continuationToken = null) {
 
   let sections = []
   if (continuationToken) {
-    sections = data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction?.continuationItems || []
+    sections =
+      data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction
+        ?.continuationItems || []
   } else {
-    sections = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || []
+    sections =
+      data?.contents?.twoColumnSearchResultsRenderer?.primaryContents
+        ?.sectionListRenderer?.contents || []
   }
 
   const results = []
@@ -119,13 +124,17 @@ async function innertubeSearch(query, continuationToken = null) {
 
   for (const section of sections) {
     if (section.continuationItemRenderer) {
-      nextToken = section.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      nextToken =
+        section.continuationItemRenderer?.continuationEndpoint
+          ?.continuationCommand?.token
       continue
     }
     const items = section?.itemSectionRenderer?.contents || []
     for (const item of items) {
       if (item.continuationItemRenderer) {
-        nextToken = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+        nextToken =
+          item.continuationItemRenderer?.continuationEndpoint
+            ?.continuationCommand?.token
         continue
       }
       const vr = item?.videoRenderer
@@ -155,10 +164,16 @@ async function innertubeBrowse(continuationToken = null) {
 
   let sections = []
   if (continuationToken) {
-    sections = data?.onResponseReceivedActions?.[0]?.appendContinuationItemsAction?.continuationItems || 
-               data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction?.continuationItems || []
+    sections =
+      data?.onResponseReceivedActions?.[0]?.appendContinuationItemsAction
+        ?.continuationItems ||
+      data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction
+        ?.continuationItems ||
+      []
   } else {
-    sections = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.richGridRenderer?.contents || []
+    sections =
+      data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer
+        ?.content?.richGridRenderer?.contents || []
   }
 
   const results = []
@@ -166,7 +181,9 @@ async function innertubeBrowse(continuationToken = null) {
 
   for (const section of sections) {
     if (section.continuationItemRenderer) {
-      nextToken = section.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      nextToken =
+        section.continuationItemRenderer?.continuationEndpoint
+          ?.continuationCommand?.token
       continue
     }
     const item = section.richItemRenderer?.content?.videoRenderer
@@ -202,10 +219,16 @@ async function innertubeNext(videoId, continuationToken = null) {
 
   let items = []
   if (continuationToken) {
-    items = data?.onResponseReceivedEndpoints?.[0]?.appendContinuationItemsAction?.continuationItems || 
-            data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction?.continuationItems || []
+    items =
+      data?.onResponseReceivedEndpoints?.[0]?.appendContinuationItemsAction
+        ?.continuationItems ||
+      data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction
+        ?.continuationItems ||
+      []
   } else {
-    items = data?.contents?.twoColumnWatchNextResults?.secondaryResults?.secondaryResults?.results || []
+    items =
+      data?.contents?.twoColumnWatchNextResults?.secondaryResults
+        ?.secondaryResults?.results || []
   }
 
   const results = []
@@ -213,7 +236,9 @@ async function innertubeNext(videoId, continuationToken = null) {
 
   for (const item of items) {
     if (item.continuationItemRenderer) {
-      nextToken = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      nextToken =
+        item.continuationItemRenderer?.continuationEndpoint?.continuationCommand
+          ?.token
       continue
     }
     const compactVideo = item.compactVideoRenderer
@@ -221,7 +246,10 @@ async function innertubeNext(videoId, continuationToken = null) {
       results.push({
         id: compactVideo.videoId,
         title: compactVideo.title?.runs?.[0]?.text || 'Untitled',
-        channel: compactVideo.longBylineText?.runs?.[0]?.text || compactVideo.shortBylineText?.runs?.[0]?.text || '',
+        channel:
+          compactVideo.longBylineText?.runs?.[0]?.text ||
+          compactVideo.shortBylineText?.runs?.[0]?.text ||
+          '',
         duration: parseDurationText(compactVideo.lengthText?.simpleText),
         thumbnail: ytThumb(compactVideo.videoId),
       })
@@ -232,8 +260,13 @@ async function innertubeNext(videoId, continuationToken = null) {
       try {
         const overlays = lockup.contentImage?.thumbnailViewModel?.overlays || []
         for (const o of overlays) {
-          if (o.thumbnailBottomOverlayViewModel?.badges?.[0]?.thumbnailBadgeViewModel?.text) {
-            durationStr = o.thumbnailBottomOverlayViewModel.badges[0].thumbnailBadgeViewModel.text
+          if (
+            o.thumbnailBottomOverlayViewModel?.badges?.[0]
+              ?.thumbnailBadgeViewModel?.text
+          ) {
+            durationStr =
+              o.thumbnailBottomOverlayViewModel.badges[0]
+                .thumbnailBadgeViewModel.text
             break
           }
         }
@@ -241,8 +274,13 @@ async function innertubeNext(videoId, continuationToken = null) {
 
       results.push({
         id: lockup.contentId,
-        title: lockup.metadata?.lockupMetadataViewModel?.title?.content || 'Untitled',
-        channel: lockup.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content || '',
+        title:
+          lockup.metadata?.lockupMetadataViewModel?.title?.content ||
+          'Untitled',
+        channel:
+          lockup.metadata?.lockupMetadataViewModel?.metadata
+            ?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]
+            ?.text?.content || '',
         duration: parseDurationText(durationStr),
         thumbnail: ytThumb(lockup.contentId),
       })
@@ -287,7 +325,9 @@ async function innertubePlayer(videoId) {
 
       const status = data?.playabilityStatus?.status
       if (status && status !== 'OK') {
-        lastError = new Error(`${name}: ${status} — ${data?.playabilityStatus?.reason || 'blocked'}`)
+        lastError = new Error(
+          `${name}: ${status} — ${data?.playabilityStatus?.reason || 'blocked'}`,
+        )
         continue
       }
 
@@ -299,7 +339,9 @@ async function innertubePlayer(videoId) {
 
       const info = {
         title: details.title || 'YouTube Video',
-        thumbnail: details.thumbnail?.thumbnails?.slice(-1)?.[0]?.url || ytThumb(videoId),
+        thumbnail:
+          details.thumbnail?.thumbnails?.slice(-1)?.[0]?.url ||
+          ytThumb(videoId),
         duration: parseInt(details.lengthSeconds) || 0,
         channel: details.author || '',
         description: (details.shortDescription || '').substring(0, 300),
@@ -308,7 +350,7 @@ async function innertubePlayer(videoId) {
       // Extract best combined (audio+video) MP4 stream URL
       let streamUrl = null
       const combined = (data?.streamingData?.formats || [])
-        .filter(f => f.url && f.mimeType?.startsWith('video/mp4'))
+        .filter((f) => f.url && f.mimeType?.startsWith('video/mp4'))
         .sort((a, b) => (b.width || 0) - (a.width || 0))
 
       if (combined.length > 0) {
@@ -337,9 +379,14 @@ async function getVideoPageData(videoId) {
   })
 
   // --- Extract video info from primary results ---
-  const primaryContents = data?.contents?.twoColumnWatchNextResults?.results?.results?.contents || []
-  const pri = primaryContents.find(c => c.videoPrimaryInfoRenderer)?.videoPrimaryInfoRenderer
-  const sec = primaryContents.find(c => c.videoSecondaryInfoRenderer)?.videoSecondaryInfoRenderer
+  const primaryContents =
+    data?.contents?.twoColumnWatchNextResults?.results?.results?.contents || []
+  const pri = primaryContents.find(
+    (c) => c.videoPrimaryInfoRenderer,
+  )?.videoPrimaryInfoRenderer
+  const sec = primaryContents.find(
+    (c) => c.videoSecondaryInfoRenderer,
+  )?.videoSecondaryInfoRenderer
 
   const info = {
     title: pri?.title?.runs?.[0]?.text || 'YouTube Video',
@@ -354,13 +401,17 @@ async function getVideoPageData(videoId) {
   setTimeout(() => ytInfoCache.delete(videoId), 60 * 60 * 1000)
 
   // --- Extract related videos from secondary results ---
-  const items = data?.contents?.twoColumnWatchNextResults?.secondaryResults?.secondaryResults?.results || []
+  const items =
+    data?.contents?.twoColumnWatchNextResults?.secondaryResults
+      ?.secondaryResults?.results || []
   const relatedVideos = []
   let relatedContinuation = null
 
   for (const item of items) {
     if (item.continuationItemRenderer) {
-      relatedContinuation = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      relatedContinuation =
+        item.continuationItemRenderer?.continuationEndpoint?.continuationCommand
+          ?.token
       continue
     }
     const compactVideo = item.compactVideoRenderer
@@ -368,7 +419,10 @@ async function getVideoPageData(videoId) {
       relatedVideos.push({
         id: compactVideo.videoId,
         title: compactVideo.title?.runs?.[0]?.text || 'Untitled',
-        channel: compactVideo.longBylineText?.runs?.[0]?.text || compactVideo.shortBylineText?.runs?.[0]?.text || '',
+        channel:
+          compactVideo.longBylineText?.runs?.[0]?.text ||
+          compactVideo.shortBylineText?.runs?.[0]?.text ||
+          '',
         duration: parseDurationText(compactVideo.lengthText?.simpleText),
         thumbnail: ytThumb(compactVideo.videoId),
       })
@@ -379,16 +433,26 @@ async function getVideoPageData(videoId) {
       try {
         const overlays = lockup.contentImage?.thumbnailViewModel?.overlays || []
         for (const o of overlays) {
-          if (o.thumbnailBottomOverlayViewModel?.badges?.[0]?.thumbnailBadgeViewModel?.text) {
-            durationStr = o.thumbnailBottomOverlayViewModel.badges[0].thumbnailBadgeViewModel.text
+          if (
+            o.thumbnailBottomOverlayViewModel?.badges?.[0]
+              ?.thumbnailBadgeViewModel?.text
+          ) {
+            durationStr =
+              o.thumbnailBottomOverlayViewModel.badges[0]
+                .thumbnailBadgeViewModel.text
             break
           }
         }
       } catch (e) {}
       relatedVideos.push({
         id: lockup.contentId,
-        title: lockup.metadata?.lockupMetadataViewModel?.title?.content || 'Untitled',
-        channel: lockup.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content || '',
+        title:
+          lockup.metadata?.lockupMetadataViewModel?.title?.content ||
+          'Untitled',
+        channel:
+          lockup.metadata?.lockupMetadataViewModel?.metadata
+            ?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]
+            ?.text?.content || '',
         duration: parseDurationText(durationStr),
         thumbnail: ytThumb(lockup.contentId),
       })
@@ -401,7 +465,7 @@ async function getVideoPageData(videoId) {
 // Lightweight info getter — uses cache first, then /next
 function getYouTubeInfo(videoId) {
   if (ytInfoCache.has(videoId)) return Promise.resolve(ytInfoCache.get(videoId))
-  return getVideoPageData(videoId).then(d => d.info)
+  return getVideoPageData(videoId).then((d) => d.info)
 }
 
 function getYouTubeStreamUrl(videoId) {
@@ -418,17 +482,20 @@ function getYouTubeStreamUrl(videoId) {
     execFile(
       YT_DLP,
       [
-        '-f', 'b[ext=mp4]/b/best',
+        '-f',
+        'b[ext=mp4]/b/best',
         '-g',
         '--no-warnings',
         '--no-playlist',
-        '--js-runtimes', 'node',
+        '--js-runtimes',
+        'node',
         ...cookieArgs,
         `https://www.youtube.com/watch?v=${videoId}`,
       ],
       { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
       (err, stdout) => {
-        if (err) return reject(new Error(`yt-dlp stream failed: ${err.message}`))
+        if (err)
+          return reject(new Error(`yt-dlp stream failed: ${err.message}`))
         const urls = stdout
           .trim()
           .split('\n')
@@ -451,11 +518,9 @@ function getYouTubeStreamUrl(videoId) {
   })
 }
 
-
-
 // Shared helper: cross-populate info cache from search results
 function populateInfoCache(results) {
-  results.forEach(r => {
+  results.forEach((r) => {
     if (r.id && !ytInfoCache.has(r.id)) {
       ytInfoCache.set(r.id, {
         title: r.title,
@@ -474,7 +539,7 @@ function populateInfoCache(results) {
 // ═══════════════════════════════════════════════════════════════
 async function searchYouTube(query, continuationToken = null) {
   const cacheKey = `${query}:${continuationToken || 'first'}`
-  // Only cache if we don't have a continuation token to ensure smooth pagination caching if needed, 
+  // Only cache if we don't have a continuation token to ensure smooth pagination caching if needed,
   // but for fresh feeds we don't cache pagination. Let's just bypass cache for search to be fresh too,
   // or keep a very short cache.
   const cached = ytSearchCache.get(cacheKey)
@@ -493,34 +558,52 @@ async function searchYouTube(query, continuationToken = null) {
   }
 
   if (continuationToken) {
-     return { results: [], continuationToken: null } // yt-dlp doesn't support our tokens
+    return { results: [], continuationToken: null } // yt-dlp doesn't support our tokens
   }
 
   // Fallback to yt-dlp (~10-15s)
   return new Promise((resolve, reject) => {
-    execFile(YT_DLP, [
-      '--dump-json', '--no-warnings', '--flat-playlist', '--no-check-formats',
-      `ytsearch30:${query}`,
-    ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 }, (err, stdout) => {
-      if (err) return reject(new Error(`Search failed: ${err.message}`))
-      const results = stdout.trim().split('\n').filter(Boolean).map(line => {
-        try {
-          const d = JSON.parse(line)
-          return {
-            id: d.id,
-            title: d.title || 'Untitled',
-            channel: d.channel || d.uploader || '',
-            duration: d.duration || 0,
-            thumbnail: ytThumb(d.id),
-          }
-        } catch { return null }
-      }).filter(Boolean)
+    execFile(
+      YT_DLP,
+      [
+        '--dump-json',
+        '--no-warnings',
+        '--flat-playlist',
+        '--no-check-formats',
+        `ytsearch30:${query}`,
+      ],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
+      (err, stdout) => {
+        if (err) return reject(new Error(`Search failed: ${err.message}`))
+        const results = stdout
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            try {
+              const d = JSON.parse(line)
+              return {
+                id: d.id,
+                title: d.title || 'Untitled',
+                channel: d.channel || d.uploader || '',
+                duration: d.duration || 0,
+                thumbnail: ytThumb(d.id),
+              }
+            } catch {
+              return null
+            }
+          })
+          .filter(Boolean)
 
-      populateInfoCache(results)
-      const data = { results, continuationToken: null }
-      ytSearchCache.set(cacheKey, { data, expires: Date.now() + 15 * 60 * 1000 })
-      resolve(data)
-    })
+        populateInfoCache(results)
+        const data = { results, continuationToken: null }
+        ytSearchCache.set(cacheKey, {
+          data,
+          expires: Date.now() + 15 * 60 * 1000,
+        })
+        resolve(data)
+      },
+    )
   })
 }
 
@@ -1048,7 +1131,9 @@ app.get('/youtube', async (req, res) => {
 
   // If the input is a YouTube URL or an exact 11-character video ID, redirect to the player
   if (query) {
-    const match = query.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/)
+    const match = query.match(
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+    )
     if (match) {
       return res.redirect(`/youtube/watch/${match[1]}`)
     }
@@ -1098,7 +1183,12 @@ app.get('/youtube/watch/:id', async (req, res) => {
   getYouTubeStreamUrl(videoId).catch(() => {})
 
   // Single /next call gets BOTH video info AND related videos (~0.5s)
-  let info = { title: 'YouTube Video', channel: '', description: '', thumbnail: ytThumb(videoId) }
+  let info = {
+    title: 'YouTube Video',
+    channel: '',
+    description: '',
+    thumbnail: ytThumb(videoId),
+  }
   let relatedVideos = []
   let relatedContinuation = null
 
@@ -1142,7 +1232,7 @@ app.get('/youtube/watch/:id', async (req, res) => {
     relatedVideos,
     relatedContinuation,
     formatDuration,
-    BASE_URL
+    BASE_URL,
   })
 })
 
@@ -1174,7 +1264,7 @@ app.get('/api/youtube/related', async (req, res) => {
     const videoId = req.query.videoId || ''
     const continuation = req.query.continuation
     if (!videoId && !continuation) return res.json({ results: [] })
-    
+
     const data = await innertubeNext(videoId, continuation)
     res.json(data)
   } catch (err) {
