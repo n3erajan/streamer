@@ -1,1 +1,11 @@
 yt-dlp>=2024.12.0
+# EJS challenge solver — required for yt-dlp to solve YouTube's n-signature
+# challenge using an external JS runtime (node). Without this, yt-dlp returns
+# only storyboard formats and every video fails with
+# "Requested format is not available". Locally this is installed manually;
+# Render only installs what's listed here, so it must be present.
+yt-dlp-ejs>=0.8.0
+# PO Token provider — needed for the gvs PO token that several YouTube player
+# clients require on datacenter IPs (production). Works without a running HTTP
+# server (falls back to a script-based provider via node).
+bgutil-ytdlp-pot-provider>=1.3.1
