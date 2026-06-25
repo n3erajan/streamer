@@ -522,14 +522,10 @@ async function getYouTubeStreamUrl(videoId) {
   if (cached && cached.expires > Date.now()) return cached.url
 
   return new Promise((resolve, reject) => {
-    const ytArgs = COOKIES_PATH
-      ? ['--cookies', COOKIES_PATH, '--js-runtimes', 'node', '--extractor-args', 'youtube:player_client=tv']
-      : []
-
     execFile(YT_DLP, [
       '-f', 'b[protocol!=m3u8][protocol!=m3u8_native]',
       '-g', '--no-warnings', '--no-playlist',
-      ...ytArgs,
+      '--extractor-args', 'youtube:player_client=android',
       `https://www.youtube.com/watch?v=${videoId}`,
     ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
     (err, stdout, stderr) => {
