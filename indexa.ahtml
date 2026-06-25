@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hello Taqdeer</title>
+
+    <!-- OpenGraph tags — Rave's Priapus scraper extracts these -->
+    <meta property="og:type" content="video.movie" />
+    <meta property="og:title" content="Hello Taqdeer Full Movie" />
+    <meta property="og:description" content="Watch together on Rave" />
+    <meta
+      property="og:url"
+      content="https://tubi.nirajan-paudel.com.np/movie"
+    />
+    <meta
+      property="og:image"
+      content="https://tubi.nirajan-paudel.com.np/thumbnail.png"
+    />
+    <meta
+      property="og:video"
+      content="https://tubi.nirajan-paudel.com.np/movie.mp4"
+    />
+    <meta property="og:video:type" content="video/mp4" />
+    <meta property="og:video:width" content="1280" />
+    <meta property="og:video:height" content="720" />
+    <meta
+      property="og:video:secure_url"
+      content="https://tubi.nirajan-paudel.com.np/movie.mp4"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background: #000;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+      }
+      video {
+        width: 100%;
+        max-width: 1280px;
+      }
+      #meta {
+        color: #fff;
+        font-family: sans-serif;
+        padding: 10px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="meta">
+      <span id="title-text">Hello taqdeer full movie</span> —
+      <span id="duration-text">Loading...</span>
+    </div>
+
+    <video
+      id="player"
+      controls
+      playsinline
+      webkit-playsinline
+      preload="metadata"
+      width="100%"
+      src="https://tubi.nirajan-paudel.com.np/movie.mp4"
+    >
+      <source
+        src="https://tubi.nirajan-paudel.com.np/movie.mp4"
+        type="video/mp4"
+      />
+    </video>
+    <script>
+      const v = document.getElementById('player')
+      const durationEl = document.getElementById('duration-text')
+
+      v.addEventListener('loadedmetadata', () => {
+        const totalSec = Math.floor(v.duration)
+        const h = Math.floor(totalSec / 3600)
+        const m = Math.floor((totalSec % 3600) / 60)
+        const s = totalSec % 60
+        const str =
+          h > 0
+            ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+            : `${m}:${String(s)}`
+        durationEl.textContent = str
+        v.setAttribute('data-duration', str)
+      })
+
+      v.addEventListener('play', () => console.log('play'))
+      v.addEventListener('pause', () => console.log('pause'))
+      v.addEventListener('seeked', () => console.log('seeked'))
+      v.addEventListener('timeupdate', () => console.log('time', v.currentTime))
+      v.addEventListener('ended', () => console.log('ended'))
+    </script>
+  </body>
+</html>

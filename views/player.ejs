@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title><%= title %></title>
+
+  <meta property="og:type"        content="video.movie" />
+  <meta property="og:title"       content="<%= title %>" />
+  <meta property="og:description" content="<%= description %>" />
+  <meta property="og:url"         content="<%= pageUrl %>" />
+  <% if (thumb) { %><meta property="og:image" content="<%= BASE_URL %><%= thumb %>" /><% } %>
+  <meta property="og:video"       content="<%= BASE_URL %><%= video %>" />
+  <meta property="og:video:type"  content="video/mp4" />
+  <meta property="og:video:secure_url" content="<%= BASE_URL %><%= video %>" />
+  <meta name="author" content="neerajan" />
+  <meta property="og:site_name" content="neerajan" />
+
+  <%- include('partials/styles') %>
+  <style>
+    body{
+      background:#000;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      min-height:100vh;
+    }
+    .player-wrap{
+      width:100%;
+      max-width:1000px;
+      margin-top:env(safe-area-inset-top, 0);
+    }
+    video{
+      width:100%;
+      display:block;
+      background:#000;
+      box-shadow:0 0 60px rgba(0,0,0,.6);
+    }
+    .info{
+      padding:16px 18px 28px;
+      width:100%;
+      max-width:1000px;
+    }
+    .info h2{font-size:1.15rem;font-weight:700;margin-bottom:2px}
+    .info .year{color:var(--text-dim);font-size:.85rem;margin-bottom:8px}
+    .info p{color:var(--text-dim);font-size:.9rem;line-height:1.5;max-width:640px}
+    .back{
+      position:fixed;
+      top:16px;
+      left:16px;
+      background:rgba(20,20,26,.75);
+      backdrop-filter:blur(6px);
+      color:#ddd;
+      padding:7px 16px;
+      border-radius:999px;
+      text-decoration:none;
+      font-size:.85rem;
+      font-weight:600;
+      z-index:10;
+      border:1px solid rgba(255,255,255,.08);
+      transition:background .2s ease, color .2s ease;
+    }
+    .back:hover{background:var(--accent);color:#fff}
+
+    @media (max-width:640px){
+      .back{top:10px;left:10px;padding:6px 13px;font-size:.8rem}
+      .info{padding:14px 16px 24px}
+      .info h2{font-size:1.02rem}
+      .info p{font-size:.85rem}
+    }
+  </style>
+</head>
+<body>
+  <a class="back" href="/">&larr; All Movies</a>
+  <div class="player-wrap">
+    <video id="player" controls playsinline webkit-playsinline preload="metadata"
+           poster="<%= thumb || '' %>" width="100%" src="<%= video %>">
+      <source src="<%= video %>" type="video/mp4" />
+    </video>
+  </div>
+  <div class="info">
+    <h2><%= title %></h2>
+    <% if (year) { %><div class="year"><%= year %></div><% } %>
+    <p><%= description %></p>
+  </div>
+  <script>
+    const v = document.getElementById('player')
+    v.addEventListener('play',    () => console.log('play'))
+    v.addEventListener('pause',   () => console.log('pause'))
+    v.addEventListener('seeked',  () => console.log('seeked'))
+    v.addEventListener('timeupdate', () => console.log('time', v.currentTime))
+    v.addEventListener('ended',   () => console.log('ended'))
+  </script>
+</body>
+</html>
