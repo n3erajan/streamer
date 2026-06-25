@@ -4,6 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title><%= title %></title>
+  <link rel="icon" href="/favicon.ico">
 
   <meta property="og:type"        content="video.movie" />
   <meta property="og:title"       content="<%= title %>" />
@@ -18,6 +19,7 @@
   <meta property="og:site_name" content="neerajan" />
 
   <%- include('partials/styles') %>
+  <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
   <style>
     .cinema-wrap{
       width:100%;
@@ -94,9 +96,7 @@
     <div class="cinema-wrap">
       <div class="video-frame">
         <video id="player" controls playsinline webkit-playsinline preload="metadata"
-               poster="<%= thumb || '' %>" width="100%" src="<%= video %>">
-          <source src="<%= video %>" type="video/mp4" />
-        </video>
+               poster="<%= thumb || '' %>" width="100%"></video>
       </div>
       <div class="video-info">
         <button class="btn-share" onclick="navigator.clipboard.writeText(window.location.href); this.innerText='Copied!'; setTimeout(() => this.innerText='Share Link', 2000)">Share Link</button>
@@ -107,13 +107,25 @@
     </div>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
   <script>
-    const v = document.getElementById('player')
-    v.addEventListener('play',    () => console.log('play'))
-    v.addEventListener('pause',   () => console.log('pause'))
-    v.addEventListener('seeked',  () => console.log('seeked'))
-    v.addEventListener('timeupdate', () => console.log('time', v.currentTime))
-    v.addEventListener('ended',   () => console.log('ended'))
+    const video = document.getElementById('player')
+    const hlsUrl = '/api/hls/<%= slug %>.m3u8'
+
+    if (Hls.isSupported()) {
+      const hls = new Hls()
+      hls.loadSource(hlsUrl)
+      hls.attachMedia(video)
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {})
+      const player = new Plyr(video)
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = hlsUrl
+      const player = new Plyr(video)
+    } else {
+      video.src = '<%= video %>'
+      const player = new Plyr(video)
+    }
   </script>
 </body>
 </html>

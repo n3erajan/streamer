@@ -21,6 +21,7 @@ const BROWSER_FOR_COOKIES = 'chrome'
 const ytInfoCache = new Map()
 const ytStreamCache = new Map()
 const ytSearchCache = new Map()
+const ytHomeCache = new Map()
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return ''
@@ -151,8 +152,12 @@ async function innertubeSearch(query, continuationToken = null) {
   return { results, continuationToken: nextToken }
 }
 
-// Browse via InnerTube (Home Feed)
+// Browse via InnerTube (Home Feed) — cached 30 min
 async function innertubeBrowse(continuationToken = null) {
+  const cacheKey = continuationToken || 'initial'
+  const cached = ytHomeCache.get(cacheKey)
+  if (cached && cached.expires > Date.now()) return cached.data
+
   const body = { context: INNERTUBE_WEB_CONTEXT }
   if (continuationToken) {
     body.continuation = continuationToken
@@ -203,7 +208,9 @@ async function innertubeBrowse(continuationToken = null) {
     return innertubeSearch('Trending')
   }
 
-  return { results, continuationToken: nextToken }
+  const resultData = { results, continuationToken: nextToken }
+  ytHomeCache.set(cacheKey, { data: resultData, expires: Date.now() + 30 * 60 * 1000 })
+  return resultData
 }
 
 // Next via InnerTube (Related Videos)
@@ -719,45 +726,67 @@ const TRANSCODE_DIR = path.join(MOVIES_DIR, '.web-cache')
 if (!fs.existsSync(TRANSCODE_DIR))
   fs.mkdirSync(TRANSCODE_DIR, { recursive: true })
 
-function probeCodecs(videoPath) {
+function hasFaststart(videoPath) {
   return new Promise((resolve) => {
-    execFile(
-      'ffprobe',
-      [
-        '-v',
-        'error',
-        '-print_format',
-        'json',
-        '-show_entries',
-        'stream=codec_name,codec_type:format_tags=compatible_brands',
-        videoPath,
-      ],
-      (err, stdout) => {
-        if (err) return resolve(null)
-        try {
-          const data = JSON.parse(stdout)
-          const streams = data.streams || []
-          const videoCodec =
-            streams.find((s) => s.codec_type === 'video')?.codec_name || null
-          const audioCodec =
-            streams.find((s) => s.codec_type === 'audio')?.codec_name || null
-          const compatibleBrands = data.format?.tags?.compatible_brands || ''
-          const isFragmented =
-            compatibleBrands.includes('iso5') ||
-            compatibleBrands.includes('iso6') ||
-            compatibleBrands.includes('dash')
-          resolve({ videoCodec, audioCodec, isFragmented })
-        } catch {
-          resolve(null)
-        }
-      },
-    )
+    try {
+      const fd = fs.openSync(videoPath, 'r')
+      const buf = Buffer.alloc(1048576) // 1 MB header scan
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0)
+      fs.closeSync(fd)
+      const header = buf.toString('binary', 0, bytesRead)
+      // If 'moov' appears in the first 1 MB, the metadata is at the front
+      resolve(header.includes('moov'))
+    } catch {
+      resolve(false)
+    }
   })
+}
+
+async function probeCodecs(videoPath) {
+  const [codecInfo, faststart] = await Promise.all([
+    new Promise((resolve) => {
+      execFile(
+        'ffprobe',
+        [
+          '-v',
+          'error',
+          '-print_format',
+          'json',
+          '-show_entries',
+          'stream=codec_name,codec_type:format_tags=compatible_brands',
+          videoPath,
+        ],
+        (err, stdout) => {
+          if (err) return resolve(null)
+          try {
+            const data = JSON.parse(stdout)
+            const streams = data.streams || []
+            const videoCodec =
+              streams.find((s) => s.codec_type === 'video')?.codec_name || null
+            const audioCodec =
+              streams.find((s) => s.codec_type === 'audio')?.codec_name || null
+            const compatibleBrands = data.format?.tags?.compatible_brands || ''
+            const isFragmented =
+              compatibleBrands.includes('iso5') ||
+              compatibleBrands.includes('iso6') ||
+              compatibleBrands.includes('dash')
+            resolve({ videoCodec, audioCodec, isFragmented })
+          } catch {
+            resolve(null)
+          }
+        },
+      )
+    }),
+    hasFaststart(videoPath),
+  ])
+  if (!codecInfo) return null
+  return { ...codecInfo, faststart }
 }
 
 function isWebSafe(codecs) {
   if (!codecs) return true // if we can't tell, don't block playback — assume fine
   if (codecs.isFragmented) return false
+  if (!codecs.faststart) return false // maat aan theend — mobile needs metadata up front
   const videoOk = !codecs.videoCodec || codecs.videoCodec === 'h264'
   const audioOk =
     !codecs.audioCodec || ['aac', 'mp3'].includes(codecs.audioCodec)
@@ -997,7 +1026,12 @@ async function ensureWebSafeVideo(file) {
   return ok ? status.url : `/movies/${encodeURIComponent(file)}`
 }
 
+let movieCache = null
+let movieCacheTime = 0
+const MOVIE_CACHE_TTL = 60_000
+
 async function scanMovies() {
+  if (movieCache && Date.now() - movieCacheTime < MOVIE_CACHE_TTL) return movieCache
   if (!fs.existsSync(MOVIES_DIR)) return []
 
   const entries = fs.readdirSync(MOVIES_DIR)
@@ -1050,6 +1084,8 @@ async function scanMovies() {
 
   // Sort by title
   movies.sort((a, b) => a.title.localeCompare(b.title))
+  movieCache = movies
+  movieCacheTime = Date.now()
   return movies
 }
 
@@ -1073,7 +1109,138 @@ app.use((req, res, next) => {
 
 // --- Static files from movies/ ---
 
+app.use('/favicon.ico', (req, res) => res.sendFile(path.join(__dirname, 'public', 'favicon.ico')))
+
+// --- Video streaming (honors browser Range requests as-is) ---
+app.get('/movies/:file', async (req, res, next) => {
+  const fileName = path.basename(req.params.file)
+  if (!/\.(mp4|webm|mkv)$/i.test(fileName)) return next()
+  const filePath = path.join(MOVIES_DIR, fileName)
+  let stat
+  try { stat = await fs.promises.stat(filePath) } catch { return res.status(404).end() }
+
+  const fileSize = stat.size
+  const range = req.headers.range
+  let start, end
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-')
+    start = parseInt(parts[0], 10)
+    end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
+    if (start >= fileSize) {
+      res.status(416).set('Content-Range', `bytes */${fileSize}`).end()
+      return
+    }
+  } else {
+    start = 0
+    end = fileSize - 1
+  }
+
+  const chunkSize = end - start + 1
+  res.status(206).set({
+    'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+    'Accept-Ranges': 'bytes',
+    'Content-Length': chunkSize,
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'public, max-age=86400',
+  })
+
+  fs.createReadStream(filePath, { start, end }).pipe(res)
+  .on('error', (err) => {
+    console.error(`Stream error for ${fileName}: ${err.message}`)
+    res.end()
+  })
+})
+
 app.use('/movies', express.static(MOVIES_DIR, { dotfiles: 'allow' }))
+
+// --- HLS streaming (YouTube-style segments) ---
+// Converts MP4 into tiny .ts segments via ffmpeg -c copy (remux only, no re-encode).
+// The first request kicks off ffmpeg; segments are served as they're generated.
+const HLS_CACHE = path.join(__dirname, '.hls-cache')
+const pendingHls = new Map()
+const hlsLocks = new Set()
+
+if (!fs.existsSync(HLS_CACHE)) fs.mkdirSync(HLS_CACHE, { recursive: true })
+
+function generateHlsSegments(slug, videoPath) {
+  if (pendingHls.has(slug)) return pendingHls.get(slug)
+
+  const slugDir = path.join(HLS_CACHE, slug)
+  if (!fs.existsSync(slugDir)) fs.mkdirSync(slugDir, { recursive: true })
+
+  const job = new Promise((resolve, reject) => {
+    execFile(
+      'ffmpeg',
+      [
+        '-y',
+        '-i', videoPath,
+        '-c', 'copy',
+        '-map', '0',
+        '-f', 'hls',
+        '-hls_time', '6',
+        '-hls_list_size', '0',
+        '-hls_segment_filename', path.join(slugDir, 'seg-%03d.ts'),
+        path.join(slugDir, 'playlist.m3u8'),
+      ],
+      { maxBuffer: 1024 * 1024 * 100 },
+      (err) => {
+        pendingHls.delete(slug)
+        hlsLocks.delete(slug)
+        if (err) return reject(err)
+        resolve()
+      },
+    )
+  }).catch((err) => console.error(`HLS generation failed for ${slug}: ${err.message}`))
+
+  pendingHls.set(slug, job)
+  return job
+}
+
+app.get('/api/hls/:slug.m3u8', async (req, res) => {
+  const movies = await scanMovies()
+  const movie = movies.find((m) => m.slug === req.params.slug)
+  if (!movie) return res.status(404).end()
+
+  const slugDir = path.join(HLS_CACHE, req.params.slug)
+  const playlistPath = path.join(slugDir, 'playlist.m3u8')
+  const videoPath = path.join(MOVIES_DIR, movie.file)
+
+  // Start generation if not already running or cached
+  if (!fs.existsSync(playlistPath) && !hlsLocks.has(req.params.slug)) {
+    hlsLocks.add(req.params.slug)
+    generateHlsSegments(req.params.slug, videoPath)
+  }
+
+  // Wait for the playlist to appear (ffmpeg writes it immediately with 0 segments)
+  for (let i = 0; i < 30; i++) {
+    if (fs.existsSync(playlistPath)) break
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
+  if (!fs.existsSync(playlistPath)) return res.status(503).send('Generating playlist...')
+
+  const playlist = fs.readFileSync(playlistPath, 'utf8')
+  // Rewrite segment paths to absolute URLs through our proxy
+  const base = `${BASE_URL}/api/hls/${req.params.slug}`
+  const rewritten = playlist.replace(/^(.+\.ts)$/gm, `${base}/$1`)
+  res.set('Content-Type', 'application/vnd.apple.mpegurl')
+  res.set('Access-Control-Allow-Origin', '*')
+  res.send(rewritten)
+})
+
+app.get('/api/hls/:slug/:segment', (req, res) => {
+  const segPath = path.join(HLS_CACHE, req.params.slug, path.basename(req.params.segment))
+  if (!fs.existsSync(segPath)) return res.status(404).end()
+  const stat = fs.statSync(segPath)
+  res.set({
+    'Content-Type': 'video/MP2T',
+    'Content-Length': stat.size,
+    'Cache-Control': 'public, max-age=31536000, immutable',
+    'Accept-Ranges': 'bytes',
+  })
+  fs.createReadStream(segPath).pipe(res)
+})
 
 // --- Shared styles moved to views/partials/styles.ejs ---
 
@@ -1121,6 +1288,7 @@ app.get('/watch/:slug', async (req, res) => {
     year,
     video,
     BASE_URL,
+    slug: movie.slug,
   })
 })
 
