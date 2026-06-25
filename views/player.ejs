@@ -19,37 +19,94 @@
 
   <%- include('partials/styles') %>
   <style>
-    body{
-      background:var(--bg);
-      color:var(--text);
-      margin:0;
-      font-family:system-ui,-apple-system,sans-serif;
+    .cinema-wrap{
+      width:100%;
+      max-width:1000px;
+      margin:0 auto;
     }
-    .player-wrap{background:#000;display:flex;flex-direction:column;align-items:center;width:100%; border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,0.5);}
-    video{width:100%;max-width:960px;background:#000;display:block}
-    .info{padding:16px 20px;width:100%;max-width:960px;background:var(--card);}
-    .info h2{font-size:1.3rem;font-weight:600;margin-bottom:8px;color:#fff;}
-    .info .year{color:var(--text-dim);font-size:0.9rem;}
-    .info p{color:var(--text-dim);line-height:1.5;font-size:0.95rem;margin-top:12px;}
+    .video-frame{
+      background:#000;
+      border-radius:var(--radius-lg) var(--radius-lg) 0 0;
+      overflow:hidden;
+      box-shadow:0 16px 48px rgba(0,0,0,0.7);
+    }
+    video{width:100%;display:block;background:#000}
+
+    .video-info{
+      background:var(--surface);
+      border:1px solid var(--surface-border);
+      border-top:none;
+      border-radius:0 0 var(--radius-lg) var(--radius-lg);
+      padding:24px 28px 28px;
+      position:relative;
+    }
+    .video-info h2{
+      font-size:1.3rem;
+      font-weight:700;
+      color:var(--text);
+      letter-spacing:-0.01em;
+      line-height:1.3;
+      padding-right:110px;
+    }
+    .video-info .year{
+      color:var(--text-secondary);
+      font-size:0.85rem;
+      font-weight:500;
+      margin-top:4px;
+    }
+    .video-info .desc{
+      color:var(--text-secondary);
+      line-height:1.65;
+      font-size:0.9rem;
+      margin-top:14px;
+      max-width:60ch;
+    }
+
+    .btn-share{
+      position:absolute;
+      right:28px;
+      top:24px;
+      padding:8px 18px;
+      border-radius:var(--radius);
+      background:var(--accent);
+      color:#fff;
+      border:none;
+      cursor:pointer;
+      font-family:inherit;
+      font-size:0.82rem;
+      font-weight:600;
+      transition:background 0.2s, transform 0.15s;
+    }
+    .btn-share:hover{background:var(--accent-hover)}
+    .btn-share:active{transform:scale(0.96)}
+
+    @media(max-width:768px){
+      .video-info{padding:20px}
+      .video-info h2{font-size:1.15rem;padding-right:100px}
+      .btn-share{right:20px;top:20px;padding:7px 14px}
+    }
   </style>
 </head>
 <body>
   <%- include('partials/nav') %>
-  
-  <main class="main-container" style="display:flex; flex-direction:column; align-items:center;">
-    <div class="player-wrap">
-      <video id="player" controls playsinline webkit-playsinline preload="metadata"
-             poster="<%= thumb || '' %>" width="100%" src="<%= video %>">
-        <source src="<%= video %>" type="video/mp4" />
-      </video>
-    </div>
-    <div class="info" style="position: relative;">
-      <button onclick="navigator.clipboard.writeText(window.location.href); this.innerText='Copied!'; setTimeout(() => this.innerText='Share Link', 2000)" style="position: absolute; right: 20px; top: 20px; padding: 6px 14px; border-radius: 6px; background: var(--accent); color: white; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background 0.2s;">Share Link</button>
-      <h2 style="padding-right: 100px;"><%= title %></h2>
-      <% if (year) { %><div class="year"><%= year %></div><% } %>
-      <p><%= description %></p>
+
+  <main class="main-container" style="display:flex;flex-direction:column;align-items:center;">
+    <div class="cinema-wrap">
+      <div class="video-frame">
+        <video id="player" controls playsinline webkit-playsinline preload="metadata"
+               poster="<%= thumb || '' %>" width="100%" src="<%= video %>">
+          <source src="<%= video %>" type="video/mp4" />
+        </video>
+      </div>
+      <div class="video-info">
+        <button class="btn-share" onclick="navigator.clipboard.writeText(window.location.href); this.innerText='Copied!'; setTimeout(() => this.innerText='Share Link', 2000)">Share Link</button>
+        <h2><%= title %></h2>
+        <% if (year) { %><div class="year"><%= year %></div><% } %>
+        <p class="desc"><%= description %></p>
+      </div>
     </div>
   </main>
+
   <script>
     const v = document.getElementById('player')
     v.addEventListener('play',    () => console.log('play'))

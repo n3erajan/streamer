@@ -43,62 +43,391 @@ function getCookieArgs() {
   return ['--cookies-from-browser', BROWSER_FOR_COOKIES]
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  InnerTube API — Direct HTTP calls to YouTube's internal API
+//  Replaces yt-dlp subprocess spawning for search, info, streams
+// ═══════════════════════════════════════════════════════════════
+
+const INNERTUBE_BASE = 'https://www.youtube.com/youtubei/v1'
+const INNERTUBE_WEB_CONTEXT = {
+  client: {
+    clientName: 'WEB',
+    clientVersion: '2.20241120.01.00',
+    hl: 'en',
+    gl: 'US',
+  },
+}
+const INNERTUBE_ANDROID_CONTEXT = {
+  client: {
+    clientName: 'ANDROID',
+    clientVersion: '19.09.37',
+    androidSdkVersion: 30,
+    hl: 'en',
+    gl: 'US',
+  },
+}
+
+async function innertubeFetch(endpoint, body) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const res = await fetch(`${INNERTUBE_BASE}/${endpoint}?prettyPrint=false`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function parseDurationText(text) {
+  if (!text) return 0
+  const parts = text.split(':').map(Number)
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  return parts[0] || 0
+}
+
+
+// Search via InnerTube — returns { results, continuationToken }
+async function innertubeSearch(query, continuationToken = null) {
+  const body = { context: INNERTUBE_WEB_CONTEXT }
+  if (continuationToken) {
+    body.continuation = continuationToken
+  } else {
+    body.query = query
+  }
+
+  const data = await innertubeFetch('search', body)
+
+  let sections = []
+  if (continuationToken) {
+    sections = data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction?.continuationItems || []
+  } else {
+    sections = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || []
+  }
+
+  const results = []
+  let nextToken = null
+
+  for (const section of sections) {
+    if (section.continuationItemRenderer) {
+      nextToken = section.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      continue
+    }
+    const items = section?.itemSectionRenderer?.contents || []
+    for (const item of items) {
+      if (item.continuationItemRenderer) {
+        nextToken = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+        continue
+      }
+      const vr = item?.videoRenderer
+      if (!vr?.videoId) continue
+      results.push({
+        id: vr.videoId,
+        title: vr.title?.runs?.[0]?.text || 'Untitled',
+        channel: vr.ownerText?.runs?.[0]?.text || '',
+        duration: parseDurationText(vr.lengthText?.simpleText),
+        thumbnail: ytThumb(vr.videoId),
+      })
+    }
+  }
+  return { results, continuationToken: nextToken }
+}
+
+// Browse via InnerTube (Home Feed)
+async function innertubeBrowse(continuationToken = null) {
+  const body = { context: INNERTUBE_WEB_CONTEXT }
+  if (continuationToken) {
+    body.continuation = continuationToken
+  } else {
+    body.browseId = 'FEwhat_to_watch'
+  }
+
+  const data = await innertubeFetch('browse', body)
+
+  let sections = []
+  if (continuationToken) {
+    sections = data?.onResponseReceivedActions?.[0]?.appendContinuationItemsAction?.continuationItems || 
+               data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction?.continuationItems || []
+  } else {
+    sections = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.richGridRenderer?.contents || []
+  }
+
+  const results = []
+  let nextToken = null
+
+  for (const section of sections) {
+    if (section.continuationItemRenderer) {
+      nextToken = section.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      continue
+    }
+    const item = section.richItemRenderer?.content?.videoRenderer
+    if (item && item.videoId) {
+      results.push({
+        id: item.videoId,
+        title: item.title?.runs?.[0]?.text || 'Untitled',
+        channel: item.ownerText?.runs?.[0]?.text || '',
+        duration: parseDurationText(item.lengthText?.simpleText),
+        thumbnail: ytThumb(item.videoId),
+      })
+    }
+  }
+
+  // Fallback to Trending search if YouTube blocks the logged-out home feed
+  if (results.length === 0 && !continuationToken) {
+    return innertubeSearch('Trending')
+  }
+
+  return { results, continuationToken: nextToken }
+}
+
+// Next via InnerTube (Related Videos)
+async function innertubeNext(videoId, continuationToken = null) {
+  const body = { context: INNERTUBE_WEB_CONTEXT }
+  if (continuationToken) {
+    body.continuation = continuationToken
+  } else {
+    body.videoId = videoId
+  }
+
+  const data = await innertubeFetch('next', body)
+
+  let items = []
+  if (continuationToken) {
+    items = data?.onResponseReceivedEndpoints?.[0]?.appendContinuationItemsAction?.continuationItems || 
+            data?.onResponseReceivedCommands?.[0]?.appendContinuationItemsAction?.continuationItems || []
+  } else {
+    items = data?.contents?.twoColumnWatchNextResults?.secondaryResults?.secondaryResults?.results || []
+  }
+
+  const results = []
+  let nextToken = null
+
+  for (const item of items) {
+    if (item.continuationItemRenderer) {
+      nextToken = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      continue
+    }
+    const compactVideo = item.compactVideoRenderer
+    if (compactVideo && compactVideo.videoId) {
+      results.push({
+        id: compactVideo.videoId,
+        title: compactVideo.title?.runs?.[0]?.text || 'Untitled',
+        channel: compactVideo.longBylineText?.runs?.[0]?.text || compactVideo.shortBylineText?.runs?.[0]?.text || '',
+        duration: parseDurationText(compactVideo.lengthText?.simpleText),
+        thumbnail: ytThumb(compactVideo.videoId),
+      })
+    }
+    const lockup = item.lockupViewModel
+    if (lockup && lockup.contentId) {
+      let durationStr = ''
+      try {
+        const overlays = lockup.contentImage?.thumbnailViewModel?.overlays || []
+        for (const o of overlays) {
+          if (o.thumbnailBottomOverlayViewModel?.badges?.[0]?.thumbnailBadgeViewModel?.text) {
+            durationStr = o.thumbnailBottomOverlayViewModel.badges[0].thumbnailBadgeViewModel.text
+            break
+          }
+        }
+      } catch (e) {}
+
+      results.push({
+        id: lockup.contentId,
+        title: lockup.metadata?.lockupMetadataViewModel?.title?.content || 'Untitled',
+        channel: lockup.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content || '',
+        duration: parseDurationText(durationStr),
+        thumbnail: ytThumb(lockup.contentId),
+      })
+    }
+  }
+  return { results, continuationToken: nextToken }
+}
+
+// Player via InnerTube — returns { info, streamUrl } or throws
+// Strategy: WEB client for info (most reliable), extract stream URLs from response
+async function innertubePlayer(videoId) {
+  // Try multiple client types for best results
+  const clients = [
+    { name: 'WEB', context: INNERTUBE_WEB_CONTEXT },
+    {
+      name: 'IOS',
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '19.45.4',
+          deviceMake: 'Apple',
+          deviceModel: 'iPhone16,2',
+          osName: 'iOS',
+          osVersion: '17.6.1',
+          hl: 'en',
+          gl: 'US',
+        },
+      },
+    },
+  ]
+
+  let lastError = null
+  for (const { name, context, extra } of clients) {
+    try {
+      const data = await innertubeFetch('player', {
+        context,
+        videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
+        ...(extra || {}),
+      })
+
+      const status = data?.playabilityStatus?.status
+      if (status && status !== 'OK') {
+        lastError = new Error(`${name}: ${status} — ${data?.playabilityStatus?.reason || 'blocked'}`)
+        continue
+      }
+
+      const details = data?.videoDetails
+      if (!details) {
+        lastError = new Error(`${name}: no videoDetails`)
+        continue
+      }
+
+      const info = {
+        title: details.title || 'YouTube Video',
+        thumbnail: details.thumbnail?.thumbnails?.slice(-1)?.[0]?.url || ytThumb(videoId),
+        duration: parseInt(details.lengthSeconds) || 0,
+        channel: details.author || '',
+        description: (details.shortDescription || '').substring(0, 300),
+      }
+
+      // Extract best combined (audio+video) MP4 stream URL
+      let streamUrl = null
+      const combined = (data?.streamingData?.formats || [])
+        .filter(f => f.url && f.mimeType?.startsWith('video/mp4'))
+        .sort((a, b) => (b.width || 0) - (a.width || 0))
+
+      if (combined.length > 0) {
+        streamUrl = combined[0].url
+      }
+
+      return { info, streamUrl }
+    } catch (e) {
+      lastError = e
+    }
+  }
+
+  throw lastError || new Error('All InnerTube player clients failed')
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Public API functions — InnerTube /next for info, yt-dlp for streams
+// ═══════════════════════════════════════════════════════════════
+
+// Single /next call that returns BOTH video info AND related videos.
+// This replaces the old getYouTubeInfo + innertubeNext sequential pair.
+async function getVideoPageData(videoId) {
+  const data = await innertubeFetch('next', {
+    context: INNERTUBE_WEB_CONTEXT,
+    videoId,
+  })
+
+  // --- Extract video info from primary results ---
+  const primaryContents = data?.contents?.twoColumnWatchNextResults?.results?.results?.contents || []
+  const pri = primaryContents.find(c => c.videoPrimaryInfoRenderer)?.videoPrimaryInfoRenderer
+  const sec = primaryContents.find(c => c.videoSecondaryInfoRenderer)?.videoSecondaryInfoRenderer
+
+  const info = {
+    title: pri?.title?.runs?.[0]?.text || 'YouTube Video',
+    thumbnail: ytThumb(videoId),
+    duration: 0,
+    channel: sec?.owner?.videoOwnerRenderer?.title?.runs?.[0]?.text || '',
+    description: (sec?.attributedDescription?.content || '').substring(0, 300),
+  }
+
+  // Cache the info so subsequent requests (e.g. replays) are instant
+  ytInfoCache.set(videoId, info)
+  setTimeout(() => ytInfoCache.delete(videoId), 60 * 60 * 1000)
+
+  // --- Extract related videos from secondary results ---
+  const items = data?.contents?.twoColumnWatchNextResults?.secondaryResults?.secondaryResults?.results || []
+  const relatedVideos = []
+  let relatedContinuation = null
+
+  for (const item of items) {
+    if (item.continuationItemRenderer) {
+      relatedContinuation = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      continue
+    }
+    const compactVideo = item.compactVideoRenderer
+    if (compactVideo && compactVideo.videoId) {
+      relatedVideos.push({
+        id: compactVideo.videoId,
+        title: compactVideo.title?.runs?.[0]?.text || 'Untitled',
+        channel: compactVideo.longBylineText?.runs?.[0]?.text || compactVideo.shortBylineText?.runs?.[0]?.text || '',
+        duration: parseDurationText(compactVideo.lengthText?.simpleText),
+        thumbnail: ytThumb(compactVideo.videoId),
+      })
+    }
+    const lockup = item.lockupViewModel
+    if (lockup && lockup.contentId) {
+      let durationStr = ''
+      try {
+        const overlays = lockup.contentImage?.thumbnailViewModel?.overlays || []
+        for (const o of overlays) {
+          if (o.thumbnailBottomOverlayViewModel?.badges?.[0]?.thumbnailBadgeViewModel?.text) {
+            durationStr = o.thumbnailBottomOverlayViewModel.badges[0].thumbnailBadgeViewModel.text
+            break
+          }
+        }
+      } catch (e) {}
+      relatedVideos.push({
+        id: lockup.contentId,
+        title: lockup.metadata?.lockupMetadataViewModel?.title?.content || 'Untitled',
+        channel: lockup.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content || '',
+        duration: parseDurationText(durationStr),
+        thumbnail: ytThumb(lockup.contentId),
+      })
+    }
+  }
+
+  return { info, relatedVideos, relatedContinuation }
+}
+
+// Lightweight info getter — uses cache first, then /next
 function getYouTubeInfo(videoId) {
   if (ytInfoCache.has(videoId)) return Promise.resolve(ytInfoCache.get(videoId))
-
-  return new Promise((resolve, reject) => {
-    execFile(
-      YT_DLP,
-      [
-        '--dump-json',
-        '--no-warnings',
-        '--ignore-no-formats-error',
-        `https://www.youtube.com/watch?v=${videoId}`,
-      ],
-      { maxBuffer: 10 * 1024 * 1024, timeout: 15000 },
-      (err, stdout) => {
-        if (err) return reject(new Error(`yt-dlp info failed: ${err.message}`))
-        try {
-          const data = JSON.parse(stdout.trim().split('\n')[0])
-          const info = {
-            title: data.title || 'YouTube Video',
-            thumbnail: data.thumbnail || null,
-            duration: data.duration || 0,
-            channel: data.channel || data.uploader || '',
-            description: (data.description || '').substring(0, 300),
-          }
-          ytInfoCache.set(videoId, info)
-          setTimeout(() => ytInfoCache.delete(videoId), 30 * 60 * 1000)
-          resolve(info)
-        } catch (e) {
-          reject(new Error('Failed to parse yt-dlp output'))
-        }
-      },
-    )
-  })
+  return getVideoPageData(videoId).then(d => d.info)
 }
 
 function getYouTubeStreamUrl(videoId) {
   const cached = ytStreamCache.get(videoId)
   if (cached && cached.expires > Date.now()) return Promise.resolve(cached.url)
 
+  // Go straight to yt-dlp — InnerTube /player is blocked for unauthenticated requests
+  const cookiesFile = path.join(__dirname, 'cookies.txt')
+  const cookieArgs = fs.existsSync(cookiesFile)
+    ? ['--cookies', cookiesFile]
+    : []
+
   return new Promise((resolve, reject) => {
     execFile(
       YT_DLP,
       [
-        '-f',
-        'b[ext=mp4]/b/best',
+        '-f', 'b[ext=mp4]/b/best',
         '-g',
         '--no-warnings',
-        '--js-runtimes',
-        'node',
-        ...getCookieArgs(),
+        '--no-playlist',
+        ...cookieArgs,
         `https://www.youtube.com/watch?v=${videoId}`,
       ],
       { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
       (err, stdout) => {
-        if (err)
-          return reject(new Error(`yt-dlp stream failed: ${err.message}`))
+        if (err) return reject(new Error(`yt-dlp stream failed: ${err.message}`))
         const urls = stdout
           .trim()
           .split('\n')
@@ -121,15 +450,56 @@ function getYouTubeStreamUrl(videoId) {
   })
 }
 
-function searchYouTube(query, limit = 30) {
-  const cacheKey = `${query}:${limit}`
-  const cached = ytSearchCache.get(cacheKey)
-  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.results)
 
+
+// Shared helper: cross-populate info cache from search results
+function populateInfoCache(results) {
+  results.forEach(r => {
+    if (r.id && !ytInfoCache.has(r.id)) {
+      ytInfoCache.set(r.id, {
+        title: r.title,
+        thumbnail: r.thumbnail,
+        duration: r.duration,
+        channel: r.channel,
+        description: '',
+      })
+      setTimeout(() => ytInfoCache.delete(r.id), 60 * 60 * 1000)
+    }
+  })
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Public API functions — InnerTube first, yt-dlp fallback
+// ═══════════════════════════════════════════════════════════════
+async function searchYouTube(query, continuationToken = null) {
+  const cacheKey = `${query}:${continuationToken || 'first'}`
+  // Only cache if we don't have a continuation token to ensure smooth pagination caching if needed, 
+  // but for fresh feeds we don't cache pagination. Let's just bypass cache for search to be fresh too,
+  // or keep a very short cache.
+  const cached = ytSearchCache.get(cacheKey)
+  if (cached && cached.expires > Date.now()) return cached.data
+
+  // Try InnerTube search first (~0.3-0.5s)
+  try {
+    const data = await innertubeSearch(query, continuationToken)
+    if (data.results.length > 0) {
+      populateInfoCache(data.results)
+      ytSearchCache.set(cacheKey, { data, expires: Date.now() + 5 * 60 * 1000 })
+      return data
+    }
+  } catch (e) {
+    console.log(`InnerTube search failed: ${e.message}, falling back to yt-dlp`)
+  }
+
+  if (continuationToken) {
+     return { results: [], continuationToken: null } // yt-dlp doesn't support our tokens
+  }
+
+  // Fallback to yt-dlp (~10-15s)
   return new Promise((resolve, reject) => {
     execFile(YT_DLP, [
-      '--dump-json', '--no-warnings', '--flat-playlist',
-      `ytsearch${limit}:${query}`,
+      '--dump-json', '--no-warnings', '--flat-playlist', '--no-check-formats',
+      `ytsearch30:${query}`,
     ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 }, (err, stdout) => {
       if (err) return reject(new Error(`Search failed: ${err.message}`))
       const results = stdout.trim().split('\n').filter(Boolean).map(line => {
@@ -141,44 +511,15 @@ function searchYouTube(query, limit = 30) {
             channel: d.channel || d.uploader || '',
             duration: d.duration || 0,
             thumbnail: ytThumb(d.id),
-            url: d.webpage_url || `https://www.youtube.com/watch?v=${d.id}`,
           }
         } catch { return null }
       }).filter(Boolean)
 
-      ytSearchCache.set(cacheKey, { results, expires: Date.now() + 5 * 60 * 1000 })
-      resolve(results)
+      populateInfoCache(results)
+      const data = { results, continuationToken: null }
+      ytSearchCache.set(cacheKey, { data, expires: Date.now() + 15 * 60 * 1000 })
+      resolve(data)
     })
-  })
-}
-
-const FEED_QUERIES = [
-  'trending music', 'viral videos', 'popular movies',
-  'gaming highlights', 'comedy clips', 'sports highlights',
-]
-
-function getYouTubeFeed(limit = 30) {
-  const cached = ytSearchCache.get('__feed__')
-  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.results)
-
-  const perQuery = Math.max(3, Math.ceil(limit / FEED_QUERIES.length))
-  return Promise.all(
-    FEED_QUERIES.map(q => searchYouTube(q, perQuery).catch(() => []))
-  ).then(results => {
-    const merged = []
-    const maxLen = Math.max(...results.map(r => r.length))
-    for (let i = 0; i < maxLen; i++) {
-      for (const arr of results) {
-        if (arr[i]) merged.push(arr[i])
-        if (merged.length >= limit) break
-      }
-      if (merged.length >= limit) break
-    }
-    const seen = new Set()
-    const deduped = merged.filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true })
-
-    ytSearchCache.set('__feed__', { results: deduped, expires: Date.now() + 10 * 60 * 1000 })
-    return deduped
   })
 }
 
@@ -702,30 +1043,34 @@ app.get('/watch/:slug', async (req, res) => {
 // --- YouTube routes ---
 
 app.get('/youtube', async (req, res) => {
-  const input = (req.query.q || req.query.url || '').trim()
+  const query = req.query.q || ''
 
   // If the input is a YouTube URL or an exact 11-character video ID, redirect to the player
-  if (input) {
-    const match = input.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/)
+  if (query) {
+    const match = query.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/)
     if (match) {
       return res.redirect(`/youtube/watch/${match[1]}`)
     }
-    if (/^[a-zA-Z0-9_-]{11}$/.test(input)) {
-      return res.redirect(`/youtube/watch/${input}`)
+    if (/^[a-zA-Z0-9_-]{11}$/.test(query)) {
+      return res.redirect(`/youtube/watch/${query}`)
     }
   }
 
-  const query = input
   let results = []
+  let continuationToken = null
   let error = null
   let isSearch = false
 
   try {
     if (query) {
       isSearch = true
-      results = await searchYouTube(query, 30)
+      const data = await searchYouTube(query)
+      results = data.results
+      continuationToken = data.continuationToken
     } else {
-      results = await getYouTubeFeed(30)
+      const data = await innertubeBrowse()
+      results = data.results
+      continuationToken = data.continuationToken
     }
   } catch (e) {
     error = e.message
@@ -734,6 +1079,7 @@ app.get('/youtube', async (req, res) => {
   res.render('youtube-browser', {
     query,
     results,
+    continuationToken,
     error,
     isSearch,
   })
@@ -745,17 +1091,43 @@ app.get('/youtube/watch/:id', async (req, res) => {
     return res.status(400).send('Invalid video ID')
   }
 
-  let info
-  try {
-    info = await getYouTubeInfo(videoId)
-  } catch (err) {
-    return res.status(500).send(`Error fetching info: ${err.message}`)
+  // Pre-warm the stream cache in the background — don't await it.
+  // By the time the browser parses the HTML and requests the stream URL,
+  // yt-dlp will likely have already finished.
+  getYouTubeStreamUrl(videoId).catch(() => {})
+
+  // Single /next call gets BOTH video info AND related videos (~0.5s)
+  let info = { title: 'YouTube Video', channel: '', description: '', thumbnail: ytThumb(videoId) }
+  let relatedVideos = []
+  let relatedContinuation = null
+
+  // Check cache first (populated by search/browse results)
+  if (ytInfoCache.has(videoId)) {
+    info = ytInfoCache.get(videoId)
+    // Still fetch related videos (fast, ~0.5s)
+    try {
+      const nextData = await innertubeNext(videoId)
+      relatedVideos = nextData.results
+      relatedContinuation = nextData.continuationToken
+    } catch (e) {
+      console.log(`Failed to fetch related videos: ${e.message}`)
+    }
+  } else {
+    // No cache — get everything from one /next call
+    try {
+      const pageData = await getVideoPageData(videoId)
+      info = pageData.info
+      relatedVideos = pageData.relatedVideos
+      relatedContinuation = pageData.relatedContinuation
+    } catch (err) {
+      console.log(`getVideoPageData failed: ${err.message}`)
+    }
   }
 
-  const title = info?.title || 'YouTube Video'
-  const thumb = info?.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
-  const description = info?.description || ''
-  const channel = info?.uploader || ''
+  const title = info.title || 'YouTube Video'
+  const thumb = info.thumbnail || ytThumb(videoId)
+  const description = info.description || ''
+  const channel = info.channel || ''
 
   res.render('youtube-player', {
     videoId,
@@ -766,23 +1138,46 @@ app.get('/youtube/watch/:id', async (req, res) => {
     description,
     channel,
     info,
+    relatedVideos,
+    relatedContinuation,
     formatDuration,
     BASE_URL
   })
 })
 
-// Async related videos API
+// --- Async API Endpoints for Infinite Scroll ---
+
+app.get('/api/youtube/home', async (req, res) => {
+  try {
+    const continuation = req.query.continuation
+    const data = await innertubeBrowse(continuation)
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/youtube/search', async (req, res) => {
+  try {
+    const query = req.query.q || ''
+    const continuation = req.query.continuation
+    const data = await searchYouTube(query, continuation)
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.get('/api/youtube/related', async (req, res) => {
   try {
-    const title = req.query.title || ''
     const videoId = req.query.videoId || ''
-    if (!title) return res.json([])
+    const continuation = req.query.continuation
+    if (!videoId && !continuation) return res.json({ results: [] })
     
-    let related = await searchYouTube(title.substring(0, 40), 12)
-    related = related.filter(r => r.id !== videoId).slice(0, 8)
-    res.json(related)
+    const data = await innertubeNext(videoId, continuation)
+    res.json(data)
   } catch (err) {
-    res.json([])
+    res.status(500).json({ error: err.message })
   }
 })
 
@@ -803,6 +1198,19 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
 })
 
 // --- MP4 range-serve fallback (express.static handles it, but just in case) ---
+
+app.use((err, req, res, next) => {
+  console.error('Express error:', err)
+  res.status(500).send('Internal Server Error')
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err)
+})
 
 app.listen(PORT, async () => {
   console.log(`Stream Server running on ${BASE_URL}`)

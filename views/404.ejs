@@ -6,13 +6,31 @@
   <title>Not found</title>
   <%- include('partials/styles') %>
   <style>
-    body{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px}
-    h1{font-size:1.4rem;color:var(--text-dim)}
-    a{color:var(--accent);text-decoration:none;font-weight:600}
+    body{
+      display:flex;align-items:center;justify-content:center;
+      flex-direction:column;gap:16px;min-height:100dvh;padding:32px;text-align:center;
+    }
+    .code{
+      font-size:6rem;font-weight:800;
+      letter-spacing:-0.06em;line-height:1;
+      color:var(--text-muted);
+    }
+    h1{font-size:1.2rem;font-weight:600;color:var(--text-secondary)}
+    .back{
+      display:inline-block;
+      margin-top:8px;
+      background:var(--accent);color:#fff;
+      text-decoration:none;font-weight:600;font-size:0.88rem;
+      padding:10px 24px;border-radius:var(--radius);
+      transition:background 0.2s, transform 0.15s;
+    }
+    .back:hover{background:var(--accent-hover)}
+    .back:active{transform:scale(0.97)}
   </style>
 </head>
 <body>
+  <div class="code">404</div>
   <h1>Movie not found</h1>
-  <a href="/">&larr; Back to all movies</a>
+  <a class="back" href="/">&larr; Back to movies</a>
 </body>
 </html>

@@ -6,43 +6,163 @@
   <title>Stream Server</title>
   <%- include('partials/styles') %>
   <style>
-    .yt-form{display:flex;gap:8px;margin-bottom:24px;max-width:500px}
-    .yt-form input{flex:1;padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.08);background:var(--card);color:var(--text);font-size:.95rem;outline:none}
-    .yt-form input:focus{border-color:var(--accent)}
-    .yt-form button{padding:10px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-size:.95rem;cursor:pointer;transition:background .2s ease}
-    .yt-form button:hover{background:var(--accent-glow)}
-    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
-    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; }
-    .search-wrap { position: relative; max-width: 340px; flex: 1 1 260px; }
-    .search-wrap svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-dim); }
-    #search { width: 100%; padding: 10px 16px 10px 40px; border-radius: 999px; border: 1px solid rgba(255,255,255,.08); background: var(--card); color: var(--text); outline: none; }
-    #search:focus { border-color: var(--accent); }
-    .play-overlay{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0); opacity:0; transition:opacity .2s ease, background .2s ease; }
-    .play-overlay svg{ filter:drop-shadow(0 2px 6px rgba(0,0,0,.5)); transform:scale(.85); transition:transform .2s ease; }
-    .card:hover .play-overlay{ opacity:1; background:rgba(0,0,0,.25); }
-    .card:hover .play-overlay svg{ transform:scale(1); }
-    .no-results { display: none; color: var(--text-dim); text-align: center; margin-top: 60px; font-size: 1rem; }
+    /* ── Hero / Header ── */
+    .page-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:28px;
+      flex-wrap:wrap;
+      gap:16px;
+    }
+    .page-header h1{
+      font-size:1.6rem;
+      font-weight:700;
+      color:var(--text);
+      letter-spacing:-0.02em;
+    }
+
+    .search-wrap{
+      position:relative;
+      width:100%;
+      max-width:480px;
+      flex:1 1 100%;
+    }
+    .search-icon{
+      position:absolute;
+      left:14px;
+      top:50%;
+      transform:translateY(-50%);
+      color:var(--text-muted);
+      transition:color 0.2s;
+    }
+    .search-wrap:focus-within .search-icon{color:var(--text-secondary)}
+    #search{
+      width:100%;
+      box-sizing: border-box;
+      padding:12px 14px 12px 42px;
+      border-radius:var(--radius);
+      border:1px solid var(--surface-border);
+      background:var(--surface);
+      color:var(--text);
+      font-family:inherit;
+      font-size:16px; /* Prevent iOS zoom */
+      outline:none;
+      transition:border-color 0.2s, box-shadow 0.2s;
+    }
+    #search::placeholder{color:var(--text-muted)}
+    #search:focus{
+      border-color:var(--accent);
+      box-shadow:0 0 0 2px var(--accent-glow);
+    }
+
+    /* ── YouTube quick-search bar ── */
+    .yt-bar{
+      display:flex;
+      gap:8px;
+      margin-bottom:24px;
+      max-width:480px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .yt-bar input{
+      flex:1;
+      min-width: 0;
+      box-sizing: border-box;
+      padding:12px 14px;
+      border-radius:var(--radius);
+      border:1px solid var(--surface-border);
+      background:var(--surface);
+      color:var(--text);
+      font-family:inherit;
+      font-size:16px; /* Prevent iOS zoom */
+      outline:none;
+      transition:border-color 0.2s, box-shadow 0.2s;
+    }
+    .yt-bar input::placeholder{color:var(--text-muted)}
+    .yt-bar input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+    .yt-bar button{
+      padding:12px 20px;
+      border-radius:var(--radius);
+      border:none;
+      background:var(--accent);
+      color:#fff;
+      font-family:inherit;
+      font-size:16px;
+      font-weight:600;
+      cursor:pointer;
+      transition:background 0.2s, transform 0.15s;
+      white-space:nowrap;
+    }
+    .yt-bar button:hover{background:var(--accent-hover)}
+    .yt-bar button:active{transform:scale(0.97)}
+
+    /* ── Play overlay ── */
+    .play-overlay{
+      position:absolute;inset:0;
+      display:flex;align-items:center;justify-content:center;
+      background:rgba(0,0,0,0);
+      opacity:0;
+      transition:opacity 0.2s, background 0.2s;
+    }
+    .play-overlay svg{
+      filter:drop-shadow(0 2px 6px rgba(0,0,0,.6));
+      transform:scale(0.85);
+      transition:transform 0.2s;
+    }
+    .card:hover .play-overlay{opacity:1;background:rgba(0,0,0,.3)}
+    .card:hover .play-overlay svg{transform:scale(1)}
+
+    .no-results{
+      display:none;
+      color:var(--text-secondary);
+      text-align:center;
+      margin-top:60px;
+      font-size:0.95rem;
+    }
+
+    /* ── Section label ── */
+    .section-label{
+      font-size:1.2rem;
+      font-weight:700;
+      color:var(--text);
+      margin-bottom:18px;
+      letter-spacing:-0.01em;
+    }
+
+    @media(max-width:768px){
+      .page-header h1{font-size:1.3rem}
+      .yt-bar{max-width:100%}
+    }
+    @media(max-width:480px){
+      .page-header{flex-direction:column;align-items:stretch;gap:12px}
+      .search-wrap{max-width:100%}
+      .yt-bar{flex-direction:column}
+      .yt-bar button{width:100%}
+    }
   </style>
 </head>
 <body>
   <%- include('partials/nav') %>
-  
+
   <main class="main-container">
     <div class="page-header">
-      <h1>Local Movies</h1>
+      <h1>My Library</h1>
       <% if (movies.length) { %>
         <div class="search-wrap">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input id="search" type="search" placeholder="Search movies..." autocomplete="off" />
         </div>
       <% } %>
     </div>
-    <form class="yt-form" action="/youtube" method="get">
-      <input type="text" name="q" placeholder="YouTube URL or Search..." required />
+
+    <form class="yt-bar" action="/youtube" method="get">
+      <input type="text" name="q" placeholder="YouTube URL or search..." required />
       <button type="submit">Play / Search</button>
     </form>
 
     <% if (movies.length) { %>
+      <div class="section-label">Continue watching</div>
       <div class="grid" id="grid">
         <% movies.forEach(m => { %>
           <a class="card" href="/watch/<%= m.slug %>" data-title="<%= m.title.toLowerCase() %>">
@@ -53,7 +173,7 @@
                 <div class="placeholder"><%= m.title.charAt(0) %></div>
               <% } %>
               <div class="play-overlay">
-                <svg viewBox="0 0 24 24" width="32" height="32" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                <svg viewBox="0 0 24 24" width="36" height="36" fill="white"><path d="M8 5v14l11-7z"/></svg>
               </div>
             </div>
             <div class="card-info">
@@ -65,9 +185,10 @@
       </div>
       <p class="no-results" id="no-results">No movies match your search.</p>
     <% } else { %>
-      <p class="empty">Drop .mp4 files into the <code>movies/</code> folder to get started.</p>
+      <p class="empty">Drop <code>.mp4</code> files into the <code>movies/</code> folder to get started.</p>
     <% } %>
   </main>
+
   <% if (movies.length) { %>
   <script>
     const search = document.getElementById('search')

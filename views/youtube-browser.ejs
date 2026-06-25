@@ -6,46 +6,153 @@
   <title><%= isSearch ? `Search: ${query}` : 'YouTube' %></title>
   <%- include('partials/styles') %>
   <style>
-    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
-    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; }
-    .search-wrap { display: flex; gap: 8px; max-width: 600px; flex: 1; }
-    .search-wrap input { flex: 1; padding: 10px 16px; border-radius: 999px; border: 1px solid rgba(255,255,255,.08); background: var(--card); color: var(--text); outline: none; }
-    .search-wrap input:focus { border-color: var(--accent); }
-    .search-wrap button { padding: 10px 20px; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; transition: background .2s; }
-    .search-wrap button:hover { background: var(--accent-glow); }
-    .pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
-    .pills a { padding: 6px 14px; border-radius: 20px; background: var(--card); border: 1px solid rgba(255,255,255,.08); color: var(--text-dim); text-decoration: none; font-size: .85rem; transition: background .2s, color .2s; }
-    .pills a:hover { background: var(--card-hover); color: var(--text); }
-    .page-title { margin-bottom: 16px; font-size: 1.3rem; font-weight: 600; color: #fff; }
+    .page-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:24px;
+      flex-wrap:wrap;
+      gap:16px;
+    }
+    .page-header h1{
+      font-size:1.6rem;
+      font-weight:700;
+      color:var(--text);
+      letter-spacing:-0.02em;
+    }
+
+    .search-bar{
+      display:flex;
+      gap:8px;
+      max-width:480px;
+      flex:1 1 100%;
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .search-bar input{
+      flex:1;
+      min-width: 0;
+      box-sizing: border-box;
+      padding:12px 14px;
+      border-radius:var(--radius);
+      border:1px solid var(--surface-border);
+      background:var(--surface);
+      color:var(--text);
+      font-family:inherit;
+      font-size:16px; /* Prevent iOS zoom */
+      outline:none;
+      transition:border-color 0.2s, box-shadow 0.2s;
+    }
+    .search-bar input::placeholder{color:var(--text-muted)}
+    .search-bar input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+    .search-bar button{
+      padding:12px 20px;
+      border-radius:var(--radius);
+      border:none;
+      background:var(--accent);
+      color:#fff;
+      font-family:inherit;
+      font-size:16px;
+      font-weight:600;
+      cursor:pointer;
+      transition:background 0.2s, transform 0.15s;
+      white-space:nowrap;
+    }
+    .search-bar button:hover{background:var(--accent-hover)}
+    .search-bar button:active{transform:scale(0.97)}
+
+    .chips{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-bottom:28px;
+    }
+    .chip{
+      padding:6px 16px;
+      border-radius:var(--radius);
+      background:var(--surface);
+      border:1px solid var(--surface-border);
+      color:var(--text-secondary);
+      text-decoration:none;
+      font-size:0.82rem;
+      font-weight:500;
+      transition:background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    .chip:hover{
+      background:var(--surface-hover);
+      color:var(--text);
+      border-color:rgba(255,255,255,0.1);
+    }
+
+    .section-label{
+      font-size:1.2rem;
+      font-weight:700;
+      color:var(--text);
+      margin-bottom:18px;
+      letter-spacing:-0.01em;
+    }
+
+    @media(max-width:768px){
+      .page-header h1{font-size:1.3rem}
+    }
+    @media(max-width:480px){
+      .page-header{flex-direction:column;align-items:stretch;gap:12px}
+      .search-bar{max-width:100%}
+      .search-bar button{padding:10px 14px}
+      .chips{gap:6px}
+      .chip{font-size:0.78rem;padding:5px 12px}
+    }
+
+    .loader-container {
+      display: flex;
+      justify-content: center;
+      padding: 30px 0;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .loader-container.active {
+      opacity: 1;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--surface-border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
   <%- include('partials/nav') %>
-  
+
   <main class="main-container">
     <div class="page-header">
-      <h1>YouTube Browser</h1>
-      <form class="search-wrap" action="/youtube" method="get">
+      <h1>YouTube</h1>
+      <form class="search-bar" action="/youtube" method="get">
         <input type="text" name="q" placeholder="Search YouTube or paste URL..." value="<%= query %>" />
         <button type="submit">Search</button>
       </form>
     </div>
 
-    <div class="pills">
+    <div class="chips">
       <% const categories = ['Music', 'Gaming', 'Comedy', 'Sports', 'News', 'Education', 'Trailers', 'Technology'] %>
       <% categories.forEach(c => { %>
-        <a href="/youtube?q=<%= encodeURIComponent(c) %>"><%= c %></a>
+        <a class="chip" href="/youtube?q=<%= encodeURIComponent(c) %>"><%= c %></a>
       <% }) %>
     </div>
 
-    <% if (!isSearch) { %><div class="page-title">Trending Feed</div><% } %>
+    <% if (!isSearch) { %><div class="section-label">Trending</div><% } %>
 
     <% if (error) { %>
       <p class="empty">Error: <%= error %></p>
     <% } else if (!results.length) { %>
       <p class="empty">No results found.</p>
     <% } else { %>
-      <div class="grid">
+      <div class="grid" id="video-grid">
         <% results.forEach(v => { %>
           <a class="card" href="/youtube/watch/<%= v.id %>">
             <div class="thumb-wrap">
@@ -59,7 +166,89 @@
           </a>
         <% }) %>
       </div>
+
+      <% if (continuationToken) { %>
+        <div class="loader-container" id="scroll-loader" data-token="<%= continuationToken %>" data-query="<%= query %>">
+          <div class="spinner"></div>
+        </div>
+      <% } %>
     <% } %>
   </main>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const loader = document.getElementById('scroll-loader');
+      const grid = document.getElementById('video-grid');
+      if (!loader || !grid) return;
+
+      let isLoading = false;
+
+      const observer = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && !isLoading) {
+          loadMore();
+        }
+      }, { rootMargin: '200px' });
+
+      observer.observe(loader);
+
+      async function loadMore() {
+        const token = loader.getAttribute('data-token');
+        if (!token) return;
+
+        isLoading = true;
+        loader.classList.add('active');
+
+        const query = loader.getAttribute('data-query');
+        const endpoint = query ? '/api/youtube/search' : '/api/youtube/home';
+        const url = `${endpoint}?continuation=${encodeURIComponent(token)}${query ? `&q=${encodeURIComponent(query)}` : ''}`;
+
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+
+          if (data.results && data.results.length > 0) {
+            data.results.forEach(v => {
+              const card = document.createElement('a');
+              card.className = 'card';
+              card.href = `/youtube/watch/${v.id}`;
+              
+              let durationHtml = '';
+              if (v.duration) {
+                const m = Math.floor(v.duration / 60);
+                const s = String(v.duration % 60).padStart(2, '0');
+                durationHtml = `<span class="duration-badge">${m}:${s}</span>`;
+              }
+
+              card.innerHTML = `
+                <div class="thumb-wrap">
+                  <img src="${v.thumbnail}" alt="${v.title.replace(/"/g, '&quot;')}" loading="lazy" />
+                  ${durationHtml}
+                </div>
+                <div class="card-info">
+                  <div class="card-title">${v.title}</div>
+                  <div class="card-meta">${v.channel}</div>
+                </div>
+              `;
+              grid.appendChild(card);
+            });
+          }
+
+          if (data.continuationToken) {
+            loader.setAttribute('data-token', data.continuationToken);
+            isLoading = false;
+          } else {
+            loader.removeAttribute('data-token');
+            observer.disconnect();
+            loader.style.display = 'none';
+          }
+        } catch (e) {
+          console.error('Failed to load more:', e);
+          isLoading = false;
+        } finally {
+          loader.classList.remove('active');
+        }
+      }
+    });
+  </script>
 </body>
 </html>

@@ -24,42 +24,197 @@
   <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
   <%- include('partials/styles') %>
   <style>
-    body{
-      background:var(--bg);
-      color:var(--text);
-      margin:0;
-      font-family:system-ui,-apple-system,sans-serif;
+    .cinema-wrap{
+      width:100%;
+      max-width:1000px;
+      margin:0 auto;
     }
-    .player-wrap{background:#000;display:flex;flex-direction:column;align-items:center;width:100%; border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,0.5);}
-    video{width:100%;max-width:960px;background:#000;display:block}
-    .info{padding:16px 20px;width:100%;max-width:960px;background:var(--card);}
-    .info h2{font-size:1.3rem;font-weight:600;margin-bottom:8px;color:#fff;}
-    .info small{color:var(--text-dim);font-size:0.9rem;}
-    .related{margin-top:40px; width: 100%; max-width: 960px; margin-left: auto; margin-right: auto;}
-    .related h3{margin-bottom:20px;font-size:1.2rem;font-weight:600;color:#fff;}
+    .video-frame{
+      background:#000;
+      border-radius:var(--radius-lg) var(--radius-lg) 0 0;
+      overflow:hidden;
+      box-shadow:0 16px 48px rgba(0,0,0,0.7);
+    }
+    video{width:100%;display:block;background:#000}
+
+    .video-info{
+      background:var(--surface);
+      border:1px solid var(--surface-border);
+      border-top:none;
+      border-radius:0 0 var(--radius-lg) var(--radius-lg);
+      padding:24px 28px 28px;
+      position:relative;
+    }
+    .video-info h2{
+      font-size:1.3rem;
+      font-weight:700;
+      color:var(--text);
+      letter-spacing:-0.01em;
+      line-height:1.3;
+      padding-right:110px;
+    }
+    .video-info small{
+      color:var(--text-secondary);
+      font-size:0.85rem;
+      font-weight:500;
+    }
+    .video-info > p{
+      color:var(--text-secondary);
+      line-height:1.65;
+      font-size:0.9rem;
+      margin-top:14px;
+      max-width:60ch;
+    }
+
+    .btn-share{
+      position:absolute;
+      right:28px;
+      top:24px;
+      padding:8px 18px;
+      border-radius:var(--radius);
+      background:var(--accent);
+      color:#fff;
+      border:none;
+      cursor:pointer;
+      font-family:inherit;
+      font-size:0.82rem;
+      font-weight:600;
+      transition:background 0.2s, transform 0.15s;
+    }
+    .btn-share:hover{background:var(--accent-hover)}
+    .btn-share:active{transform:scale(0.96)}
+
+    /* ── Up Next card ── */
+    .up-next{
+      margin-top:20px;
+      padding:18px;
+      background:rgba(255,255,255,0.03);
+      border-radius:var(--radius);
+      border:1px solid var(--surface-border);
+    }
+    .up-next-label{
+      font-size:0.72rem;
+      font-weight:700;
+      color:var(--text-muted);
+      text-transform:uppercase;
+      letter-spacing:0.08em;
+      margin-bottom:12px;
+    }
+    .up-next-inner{
+      display:flex;gap:16px;align-items:center;flex-wrap:wrap;
+    }
+    .up-next-thumb{
+      width:150px;border-radius:var(--radius);aspect-ratio:16/9;object-fit:cover;
+    }
+    .up-next-meta{flex:1;min-width:180px}
+    .up-next-title{font-weight:600;font-size:0.95rem;margin-bottom:3px;color:var(--text)}
+    .up-next-channel{color:var(--text-secondary);font-size:0.82rem;margin-bottom:12px}
+    .up-next-btn{
+      display:inline-block;
+      background:var(--accent);
+      color:#fff;text-decoration:none;
+      padding:9px 22px;border-radius:var(--radius);
+      font-family:inherit;font-weight:600;font-size:0.85rem;
+      transition:background 0.2s, transform 0.15s;
+    }
+    .up-next-btn:hover{background:var(--accent-hover)}
+    .up-next-btn:active{transform:scale(0.97)}
+
+    /* ── Related ── */
+    .related{
+      margin-top:48px;
+      width:100%;max-width:1000px;
+      margin-left:auto;margin-right:auto;
+      padding:0 40px 80px;
+      position:relative;z-index:1;
+    }
+    .related h3{
+      font-size:1.2rem;
+      font-weight:700;
+      color:var(--text);
+      margin-bottom:20px;
+      letter-spacing:-0.01em;
+    }
+
+    @media(max-width:768px){
+      .video-info{padding:20px}
+      .video-info h2{font-size:1.15rem;padding-right:100px}
+      .btn-share{right:20px;top:20px;padding:7px 14px}
+      .related{padding:0 20px 60px}
+      .up-next-thumb{width:120px}
+    }
+    @media(max-width:480px){
+      .up-next-inner{flex-direction:column;align-items:flex-start}
+      .up-next-thumb{width:100%}
+    }
+
+    .loader-container {
+      display: flex;
+      justify-content: center;
+      padding: 30px 0;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .loader-container.active {
+      opacity: 1;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--surface-border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
   <%- include('partials/nav') %>
-  
+
   <main class="main-container" style="display:flex; flex-direction:column; align-items:center;">
-    <div class="player-wrap" id="player-container">
-      <video id="player" playsinline webkit-playsinline preload="metadata" poster="<%= thumb || '' %>" src="<%= videoUrl %>"></video>
-    </div>
-    <div class="info" style="position: relative;">
-      <button onclick="navigator.clipboard.writeText(window.location.href); this.innerText='Copied!'; setTimeout(() => this.innerText='Share Link', 2000)" style="position: absolute; right: 20px; top: 20px; padding: 6px 14px; border-radius: 6px; background: var(--accent); color: white; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background 0.2s;">Share Link</button>
-      <h2 style="padding-right: 100px;"><%= title %></h2>
-      <small><%= channel %></small>
-      <p style="margin-top: 12px; color: var(--text-dim); line-height: 1.5; font-size: 0.95rem;"><%= description %></p>
+    <div class="cinema-wrap">
+      <div class="video-frame" id="player-container">
+        <video id="player" playsinline webkit-playsinline preload="metadata" poster="<%= thumb || '' %>" src="<%= videoUrl %>"></video>
+      </div>
+      <div class="video-info">
+        <button class="btn-share" onclick="navigator.clipboard.writeText(window.location.href); this.innerText='Copied!'; setTimeout(() => this.innerText='Share Link', 2000)">Share Link</button>
+        <h2><%= title %></h2>
+        <small><%= channel %></small>
+        <p style="margin-top:12px;color:var(--text-secondary);line-height:1.65;font-size:0.9rem"><%= description %></p>
+        
+
+      </div>
     </div>
   </main>
 
-  <div class="related" id="related-container" style="display: none;">
+  <% if (relatedVideos && relatedVideos.length > 0) { %>
+  <div class="related" id="related-container">
     <h3>Related Videos</h3>
     <div class="grid" id="related-grid">
-      <!-- Related videos will be injected here -->
+      <% relatedVideos.forEach(v => { %>
+        <a class="card" href="/youtube/watch/<%= v.id %>">
+          <div class="thumb-wrap">
+            <img src="<%= v.thumbnail %>" alt="<%= v.title %>" loading="lazy" />
+            <% if (v.duration) { %><span class="duration-badge"><%= Math.floor(v.duration / 60) %>:<%= String(v.duration % 60).padStart(2, '0') %></span><% } %>
+          </div>
+          <div class="card-info">
+            <div class="card-title"><%= v.title %></div>
+            <div class="card-meta"><%= v.channel %></div>
+          </div>
+        </a>
+      <% }) %>
     </div>
+    
+    <% if (relatedContinuation) { %>
+      <div class="loader-container" id="scroll-loader" data-token="<%= relatedContinuation %>" data-videoid="<%= videoId %>">
+        <div class="spinner"></div>
+      </div>
+    <% } %>
   </div>
+  <% } %>
 
   <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
   <script>
@@ -71,67 +226,77 @@
       autoplay: true
     });
 
-    // Fetch related videos asynchronously
-    async function loadRelated() {
-      try {
-        const title = encodeURIComponent("<%= title.replace(/"/g, '&quot;') %>");
-        const videoId = "<%= videoId %>";
-        const res = await fetch(`/api/youtube/related?title=${title}&videoId=${videoId}`);
-        if (!res.ok) return;
-        
-        const related = await res.json();
-        if (related.length > 0) {
-          const container = document.getElementById('related-container');
-          const grid = document.getElementById('related-grid');
-          
-          // Extract the first video for the "Up Next" card
-          const nextVideo = related.shift();
-          const nextHtml = `
-            <div style="margin-top: 24px; padding: 16px; background: rgba(255,255,255,0.05); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
-              <h3 style="margin-top:0; margin-bottom: 12px; font-size: 1.1rem; color: #fff;">Up Next</h3>
-              <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
-                <img src="${nextVideo.thumbnail}" style="width: 160px; border-radius: 8px; aspect-ratio: 16/9; object-fit: cover;" alt="Up Next Thumbnail" />
-                <div style="flex: 1; min-width: 200px;">
-                  <div style="font-weight: 600; font-size: 1rem; margin-bottom: 4px;">${nextVideo.title}</div>
-                  <div style="color: var(--text-dim); font-size: 0.9rem; margin-bottom: 12px;">${nextVideo.channel}</div>
-                  <a href="/youtube/watch/${nextVideo.id}" style="display: inline-block; background: var(--accent); color: #fff; text-decoration: none; padding: 10px 24px; border-radius: 8px; font-weight: 600; font-size: 1rem; transition: background 0.2s;">▶ Play Next</a>
-                </div>
-              </div>
-            </div>
-          `;
-          document.querySelector('.info').insertAdjacentHTML('beforeend', nextHtml);
+    // Infinite scroll for related videos
+    document.addEventListener('DOMContentLoaded', () => {
+      const loader = document.getElementById('scroll-loader');
+      const grid = document.getElementById('related-grid');
+      if (!loader || !grid) return;
 
-          if (related.length > 0) {
-            let html = '';
-            related.forEach(v => {
-              const min = Math.floor(v.duration / 60);
-              const sec = String(v.duration % 60).padStart(2, '0');
-              const duration = v.duration ? `<span class="duration-badge">${min}:${sec}</span>` : '';
-              
-              html += `
-                <a class="card" href="/youtube/watch/${v.id}">
-                  <div class="thumb-wrap">
-                    <img src="${v.thumbnail}" alt="${v.title.replace(/"/g, '&quot;')}" loading="lazy" />
-                    ${duration}
-                  </div>
-                  <div class="card-info">
-                    <div class="card-title">${v.title}</div>
-                    <div class="card-meta">${v.channel}</div>
-                  </div>
-                </a>
-              `;
-            });
-            
-            grid.innerHTML = html;
-            container.style.display = 'block';
-          }
+      let isLoading = false;
+
+      const observer = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && !isLoading) {
+          loadMoreRelated();
         }
-      } catch (e) {
-        console.error('Failed to load related videos', e);
+      }, { rootMargin: '200px' });
+
+      observer.observe(loader);
+
+      async function loadMoreRelated() {
+        const token = loader.getAttribute('data-token');
+        const videoId = loader.getAttribute('data-videoid');
+        if (!token) return;
+
+        isLoading = true;
+        loader.classList.add('active');
+
+        try {
+          const res = await fetch(`/api/youtube/related?videoId=${videoId}&continuation=${encodeURIComponent(token)}`);
+          const data = await res.json();
+
+          if (data.results && data.results.length > 0) {
+            data.results.forEach(v => {
+              const card = document.createElement('a');
+              card.className = 'card';
+              card.href = `/youtube/watch/${v.id}`;
+              
+              let durationHtml = '';
+              if (v.duration) {
+                const m = Math.floor(v.duration / 60);
+                const s = String(v.duration % 60).padStart(2, '0');
+                durationHtml = `<span class="duration-badge">${m}:${s}</span>`;
+              }
+
+              card.innerHTML = `
+                <div class="thumb-wrap">
+                  <img src="${v.thumbnail}" alt="${v.title.replace(/"/g, '&quot;')}" loading="lazy" />
+                  ${durationHtml}
+                </div>
+                <div class="card-info">
+                  <div class="card-title">${v.title}</div>
+                  <div class="card-meta">${v.channel}</div>
+                </div>
+              `;
+              grid.appendChild(card);
+            });
+          }
+
+          if (data.continuationToken) {
+            loader.setAttribute('data-token', data.continuationToken);
+            isLoading = false;
+          } else {
+            loader.removeAttribute('data-token');
+            observer.disconnect();
+            loader.style.display = 'none';
+          }
+        } catch (e) {
+          console.error('Failed to load related videos', e);
+          isLoading = false;
+        } finally {
+          loader.classList.remove('active');
+        }
       }
-    }
-    
-    loadRelated();
+    });
   </script>
 </body>
 </html>
