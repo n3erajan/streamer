@@ -523,11 +523,9 @@ async function getYouTubeStreamUrl(videoId) {
 
   return new Promise((resolve, reject) => {
     const args = [
-      '-f', 'b[protocol!=m3u8][protocol!=m3u8_native]',
+      '-f', 'b[ext=mp4]/b',
       '-g', '--no-warnings', '--no-playlist',
-      '--extractor-args', 'youtube:player_client=android',
     ]
-    if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
     args.push(`https://www.youtube.com/watch?v=${videoId}`)
     execFile(YT_DLP, args, { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
     (err, stdout, stderr) => {
@@ -1490,7 +1488,7 @@ app.get('/api/youtube/related', async (req, res) => {
   }
 })
 
-// --- YouTube stream redirect ---
+// --- YouTube stream proxy ---
 
 app.get('/youtube-stream/:id.mp4', async (req, res) => {
   const videoId = req.params.id
@@ -1501,13 +1499,37 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
   console.log(`[youtube-stream] Request for ${videoId}`)
   try {
     const streamUrls = await getYouTubeStreamUrl(videoId)
+    const targetUrl = streamUrls.video
     console.log(
-      `[youtube-stream] Redirecting ${videoId} to ${streamUrls.video.slice(0, 80)}...`,
+      `[youtube-stream] Proxying ${videoId} from ${targetUrl.slice(0, 80)}...`,
     )
-    res.redirect(302, streamUrls.video)
+
+    // Forward range header for seeking support
+    const headers = {}
+    if (req.headers.range) {
+      headers['Range'] = req.headers.range
+    }
+
+    const upstream = await fetch(targetUrl, { headers })
+
+    // Forward status (200 or 206 for partial content)
+    res.status(upstream.status)
+
+    // Forward relevant headers
+    const fwd = ['content-type', 'content-length', 'content-range', 'accept-ranges']
+    for (const h of fwd) {
+      const val = upstream.headers.get(h)
+      if (val) res.setHeader(h, val)
+    }
+
+    // Pipe the stream
+    const { Readable } = require('stream')
+    Readable.fromWeb(upstream.body).pipe(res)
   } catch (e) {
     console.error(`[youtube-stream] Failed for ${videoId}: ${e.message}`)
-    res.status(500).send(`Failed to fetch YouTube stream: ${e.message}`)
+    if (!res.headersSent) {
+      res.status(500).send(`Failed to fetch YouTube stream: ${e.message}`)
+    }
   }
 })
 
