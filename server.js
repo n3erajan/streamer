@@ -8,7 +8,7 @@ const app = express()
 app.set('view engine', 'ejs')
 app.set('views', path.join(__dirname, 'views'))
 const PORT = 8080
-const BASE_URL = 'https://localhost:8080'
+const BASE_URL = 'http://localhost:8080'
 const MOVIES_DIR = path.join(__dirname, 'movies')
 
 // Ensure movies directory exists
@@ -16,9 +16,16 @@ if (!fs.existsSync(MOVIES_DIR)) fs.mkdirSync(MOVIES_DIR, { recursive: true })
 
 // --- YouTube helpers ---
 
-// Find yt-dlp: check PATH first (Linux / pip install), fall back to local exe (Windows)
+// Find yt-dlp: venv & PATH only (pip installed Python package)
 const YT_DLP = (() => {
   const { execSync } = require('child_process')
+  const venvPaths = [
+    path.join(__dirname, '.venv', 'bin', 'yt-dlp'),
+    path.join(__dirname, 'venv', 'bin', 'yt-dlp'),
+  ]
+  for (const p of venvPaths) {
+    if (fs.existsSync(p)) return p
+  }
   try {
     const which = process.platform === 'win32' ? 'where' : 'which'
     const found = execSync(`${which} yt-dlp`, {
@@ -29,10 +36,8 @@ const YT_DLP = (() => {
       .split('\n')[0]
     if (found) return found
   } catch {}
-  return path.join(__dirname, 'yt-dlp.exe')
+  return 'yt-dlp'
 })()
-// Change this to 'edge', 'firefox', 'brave', or 'opera' if you use a different browser on this machine
-const BROWSER_FOR_COOKIES = 'chrome'
 const ytInfoCache = new Map()
 const ytStreamCache = new Map()
 const ytSearchCache = new Map()
@@ -56,18 +61,35 @@ function ytThumb(id) {
 const COOKIES_PATH = (() => {
   if (process.env.YT_COOKIES) {
     const tmp = path.join(__dirname, '.yt-cookies-tmp.txt')
-    try { fs.writeFileSync(tmp, process.env.YT_COOKIES, 'utf8') } catch {}
+    let cookies = process.env.YT_COOKIES
+    if (
+      (cookies.startsWith('"') && cookies.endsWith('"')) ||
+      (cookies.startsWith("'") && cookies.endsWith("'"))
+    )
+      cookies = cookies.slice(1, -1)
+    cookies = cookies.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    if (!cookies.endsWith('\n')) cookies += '\n'
+    try {
+      fs.writeFileSync(tmp, cookies, 'utf8')
+      const first = cookies.split('\n')[0]
+      console.log(
+        `[cookies] Wrote ${cookies.length} chars to ${tmp}. First line: ${first.slice(0, 80)}`,
+      )
+    } catch (e) {
+      console.error(`[cookies] Failed to write temp cookie file: ${e.message}`)
+    }
     return tmp
   }
   const local = path.join(__dirname, 'cookies.txt')
-  if (fs.existsSync(local)) return local
+  if (fs.existsSync(local)) {
+    console.log(`[cookies] Using local ${local}`)
+    return local
+  }
+  console.log(
+    '[cookies] No cookie source found — yt-dlp will fall back to --cookies-from-browser',
+  )
   return null
 })()
-
-function getCookieArgs() {
-  if (COOKIES_PATH) return ['--cookies', COOKIES_PATH]
-  return ['--cookies-from-browser', BROWSER_FOR_COOKIES]
-}
 
 // ═══════════════════════════════════════════════════════════════
 //  InnerTube API — Direct HTTP calls to YouTube's internal API
@@ -83,27 +105,20 @@ const INNERTUBE_WEB_CONTEXT = {
     gl: 'US',
   },
 }
-const INNERTUBE_ANDROID_CONTEXT = {
-  client: {
-    clientName: 'ANDROID',
-    clientVersion: '19.09.37',
-    androidSdkVersion: 30,
-    hl: 'en',
-    gl: 'US',
-  },
-}
+const INNERTUBE_API_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
 
-async function innertubeFetch(endpoint, body) {
+async function innertubeFetch(endpoint, body, opts = {}) {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 8000)
+  const timeout = setTimeout(() => controller.abort(), opts.timeout || 15000)
+  const headers = {
+    'Content-Type': 'application/json',
+    'User-Agent': opts.userAgent || 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+  }
+  if (opts.cookieHeader) headers['Cookie'] = opts.cookieHeader
   try {
-    const res = await fetch(`${INNERTUBE_BASE}/${endpoint}?prettyPrint=false`, {
+    const res = await fetch(`${INNERTUBE_BASE}/${endpoint}?key=${INNERTUBE_API_KEY}&prettyPrint=false`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent':
-          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     })
@@ -502,58 +517,36 @@ function getYouTubeInfo(videoId) {
   return getVideoPageData(videoId).then((d) => d.info)
 }
 
-function getYouTubeStreamUrl(videoId) {
+async function getYouTubeStreamUrl(videoId) {
   const cached = ytStreamCache.get(videoId)
-  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.url)
-
-  console.log(`[yt-stream] Fetching stream URL for ${videoId} using ${YT_DLP}`)
-  const cookieArgs = COOKIES_PATH
-    ? ['--cookies', COOKIES_PATH]
-    : ['--cookies-from-browser', BROWSER_FOR_COOKIES]
+  if (cached && cached.expires > Date.now()) return cached.url
 
   return new Promise((resolve, reject) => {
-    execFile(
-      YT_DLP,
-      [
-        '-f',
-        'b[ext=mp4]/b/best',
-        '-g',
-        '--no-warnings',
-        '--no-playlist',
-        '--js-runtimes',
-        'node',
-        ...cookieArgs,
-        `https://www.youtube.com/watch?v=${videoId}`,
-      ],
-      { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
-      (err, stdout, stderr) => {
-        if (err) {
-          console.error(`[yt-stream] yt-dlp failed for ${videoId}: ${err.message}`)
-          if (stderr) console.error(`[yt-stream] stderr: ${stderr.slice(0, 500)}`)
-          return reject(new Error(`yt-dlp stream failed: ${err.message}`))
-        }
-        console.log(`[yt-stream] yt-dlp stdout for ${videoId}: ${stdout.slice(0, 200)}`)
-        const urls = stdout
-          .trim()
-          .split('\n')
-          .filter((l) => l.startsWith('http'))
-        if (urls.length > 0) {
-          const result = {
-            video: urls[0],
-            audio: urls.length > 1 ? urls[1] : null,
-          }
-          ytStreamCache.set(videoId, {
-            url: result,
-            expires: Date.now() + 15 * 60 * 1000,
-          })
-          console.log(`[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`)
-          resolve(result)
-        } else {
-          console.error(`[yt-stream] No stream URL found for ${videoId}. stdout: ${stdout.slice(0, 300)}`)
-          reject(new Error('No stream URL found'))
-        }
-      },
-    )
+    const ytArgs = COOKIES_PATH
+      ? ['--cookies', COOKIES_PATH, '--js-runtimes', 'node', '--remote-components', 'ejs:github']
+      : []
+
+    execFile(YT_DLP, [
+      '-f', 'b[protocol!=m3u8][protocol!=m3u8_native]',
+      '-g', '--no-warnings', '--no-playlist',
+      ...ytArgs,
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
+    (err, stdout, stderr) => {
+      if (err) {
+        const msg = (stderr || err.message || '').slice(0, 300)
+        console.error(`[yt-stream] yt-dlp failed for ${videoId}: ${msg}`)
+        return reject(new Error(`yt-dlp failed: ${msg}`))
+      }
+      const urls = stdout.trim().split('\n').filter(l => l.startsWith('http'))
+      if (urls.length === 0) {
+        return reject(new Error('No stream URL found'))
+      }
+      const result = { video: urls[0], audio: urls.length > 1 ? urls[1] : null }
+      ytStreamCache.set(videoId, { url: result, expires: Date.now() + 15 * 60 * 1000 })
+      console.log(`[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`)
+      resolve(result)
+    })
   })
 }
 
@@ -1403,7 +1396,9 @@ app.get('/youtube/watch/:id', async (req, res) => {
   // By the time the browser parses the HTML and requests the stream URL,
   // yt-dlp will likely have already finished.
   console.log(`[youtube/watch] Pre-warming stream for ${videoId}`)
-  getYouTubeStreamUrl(videoId).catch((e) => console.log(`[youtube/watch] Pre-warm failed for ${videoId}: ${e.message}`))
+  getYouTubeStreamUrl(videoId).catch((e) =>
+    console.log(`[youtube/watch] Pre-warm failed for ${videoId}: ${e.message}`),
+  )
 
   // Single /next call gets BOTH video info AND related videos (~0.5s)
   let info = {
@@ -1506,7 +1501,9 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
   console.log(`[youtube-stream] Request for ${videoId}`)
   try {
     const streamUrls = await getYouTubeStreamUrl(videoId)
-    console.log(`[youtube-stream] Redirecting ${videoId} to ${streamUrls.video.slice(0, 80)}...`)
+    console.log(
+      `[youtube-stream] Redirecting ${videoId} to ${streamUrls.video.slice(0, 80)}...`,
+    )
     res.redirect(302, streamUrls.video)
   } catch (e) {
     console.error(`[youtube-stream] Failed for ${videoId}: ${e.message}`)
@@ -1534,4 +1531,5 @@ app.listen(PORT, async () => {
   console.log(`Serving from: ${MOVIES_DIR}`)
   const movies = await scanMovies()
   console.log(`${movies.length} movie(s) found`)
+
 })
