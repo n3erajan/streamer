@@ -38,6 +38,31 @@ const YT_DLP = (() => {
   } catch {}
   return 'yt-dlp'
 })()
+
+// JS runtime for yt-dlp's n-signature / EJS challenge solver. yt-dlp 2026.x
+// only enables `deno` by default; node must be opted in with --js-runtimes.
+// Without a working runtime, YouTube returns only storyboard formats and every
+// video fails with "Requested format is not available". Node is present on both
+// dev and Render. Allow override via YT_JS_RUNTIME (e.g. "deno:/path/to/deno").
+// Validated at startup so a missing runtime fails fast instead of silently.
+const YT_JS_RUNTIME = (() => {
+  const configured = process.env.YT_JS_RUNTIME
+  if (configured) return configured
+  const { execSync } = require('child_process')
+  try {
+    const which = process.platform === 'win32' ? 'where' : 'which'
+    execSync(`${which} node`, { encoding: 'utf8', stdio: 'pipe' })
+    return 'node'
+  } catch {
+    console.warn(
+      '[yt-dlp] No JS runtime found (node not on PATH). YouTube streams will ' +
+        'likely fail with "Requested format is not available". Install Node or ' +
+        'set YT_JS_RUNTIME.',
+    )
+    return 'node'
+  }
+})()
+
 const ytInfoCache = new Map()
 const ytStreamCache = new Map()
 const ytSearchCache = new Map()
@@ -521,10 +546,11 @@ const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 function runYtDlpForStreamUrl(videoId, { timeout = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
-    // Stripped cookies (login cookies removed) are safe to pass: they
-    // provide visitor/consent cookies needed to bypass bot detection on
-    // datacenter IPs (production) without triggering yt-dlp's login player
-    // path that returns only storyboards.
+    // Enable a JS runtime so yt-dlp can solve YouTube's n-signature challenge.
+    // Without this, yt-dlp 2026.x returns only storyboard formats ("Requested
+    // format is not available"). Only `deno` is enabled by default; node is
+    // present on both dev (Node) and Render (Node) but must be opted in.
+    args.push('--js-runtimes', YT_JS_RUNTIME)
     if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
     args.push(`https://www.youtube.com/watch?v=${videoId}`)
 
@@ -695,6 +721,8 @@ async function searchYouTube(query, continuationToken = null) {
       '--no-warnings',
       '--flat-playlist',
       '--no-check-formats',
+      '--js-runtimes',
+      YT_JS_RUNTIME,
     ]
     if (COOKIES_PATH) searchArgs.push('--cookies', COOKIES_PATH)
     searchArgs.push(`ytsearch30:${query}`)
