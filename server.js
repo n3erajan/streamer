@@ -523,7 +523,7 @@ async function getYouTubeStreamUrl(videoId) {
 
   return new Promise((resolve, reject) => {
     const ytArgs = COOKIES_PATH
-      ? ['--cookies', COOKIES_PATH, '--js-runtimes', 'node', '--remote-components', 'ejs:github']
+      ? ['--cookies', COOKIES_PATH, '--js-runtimes', 'node', '--extractor-args', 'youtube:player_client=tv']
       : []
 
     execFile(YT_DLP, [
@@ -534,9 +534,9 @@ async function getYouTubeStreamUrl(videoId) {
     ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
     (err, stdout, stderr) => {
       if (err) {
-        const msg = (stderr || err.message || '').slice(0, 300)
-        console.error(`[yt-stream] yt-dlp failed for ${videoId}: ${msg}`)
-        return reject(new Error(`yt-dlp failed: ${msg}`))
+        const stderrMsg = (stderr || '').slice(0, 500)
+        if (stderrMsg) console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
+        return reject(new Error(stderrMsg || err.message))
       }
       const urls = stdout.trim().split('\n').filter(l => l.startsWith('http'))
       if (urls.length === 0) {
