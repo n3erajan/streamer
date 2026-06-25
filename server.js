@@ -15,7 +15,16 @@ if (!fs.existsSync(MOVIES_DIR)) fs.mkdirSync(MOVIES_DIR, { recursive: true })
 
 // --- YouTube helpers ---
 
-const YT_DLP = path.join(__dirname, 'yt-dlp.exe')
+// Find yt-dlp: check PATH first (Linux / pip install), fall back to local exe (Windows)
+const YT_DLP = (() => {
+  const { execSync } = require('child_process')
+  try {
+    const which = process.platform === 'win32' ? 'where' : 'which'
+    const found = execSync(`${which} yt-dlp`, { encoding: 'utf8', stdio: 'pipe' }).trim().split('\n')[0]
+    if (found) return found
+  } catch {}
+  return path.join(__dirname, 'yt-dlp.exe')
+})()
 // Change this to 'edge', 'firefox', 'brave', or 'opera' if you use a different browser on this machine
 const BROWSER_FOR_COOKIES = 'chrome'
 const ytInfoCache = new Map()
