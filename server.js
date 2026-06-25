@@ -543,7 +543,15 @@ function getYouTubeInfo(videoId) {
 // mux the two with ffmpeg on the fly; that's a separate, larger change.
 const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 
-function runYtDlpForStreamUrl(videoId, { timeout = 20000 } = {}) {
+// Per-call timeout. With a JS runtime enabled (needed for the n-signature
+// challenge), yt-dlp spawns child processes and generates PO tokens — this is
+// real work that takes time, especially on a datacenter IP (production) where
+// YouTube is slow to respond and the bgutil PO-token HTTP provider isn't
+// reachable (no local server at 127.0.0.1:4416), forcing a slower script-based
+// fallback. Override with the YT_DLP_TIMEOUT_MS env var.
+const YT_DLP_TIMEOUT_MS = Number(process.env.YT_DLP_TIMEOUT_MS) || 60000
+
+function runYtDlpForStreamUrl(videoId, { timeout = YT_DLP_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
     // Enable a JS runtime so yt-dlp can solve YouTube's n-signature challenge.
@@ -561,6 +569,22 @@ function runYtDlpForStreamUrl(videoId, { timeout = 20000 } = {}) {
       (err, stdout, stderr) => {
         if (err) {
           const stderrMsg = (stderr || '').slice(0, 500)
+          // Detect timeout vs real error. When the timeout fires, Node sends
+          // SIGTERM and yt-dlp produces NO stderr — without this check the
+          // logged message is the useless generic "Command failed: ..." wrapper.
+          const timedOut = err.killed && err.signal === 'SIGTERM'
+          if (timedOut) {
+            console.error(
+              `[yt-stream] yt-dlp TIMED OUT after ${timeout}ms for ${videoId} ` +
+                `(killed via ${err.signal || 'SIGTERM'}). This usually means ` +
+                `the n-challenge solve + PO-token generation is slow on this IP.`,
+            )
+            return reject(
+              new Error(
+                `yt-dlp timed out after ${timeout}ms (JS challenge/PO token slow)`,
+              ),
+            )
+          }
           if (stderrMsg)
             console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
           return reject(new Error(stderrMsg || err.message))
