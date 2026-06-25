@@ -522,12 +522,14 @@ async function getYouTubeStreamUrl(videoId) {
   if (cached && cached.expires > Date.now()) return cached.url
 
   return new Promise((resolve, reject) => {
-    execFile(YT_DLP, [
+    const args = [
       '-f', 'b[protocol!=m3u8][protocol!=m3u8_native]',
       '-g', '--no-warnings', '--no-playlist',
       '--extractor-args', 'youtube:player_client=android',
-      `https://www.youtube.com/watch?v=${videoId}`,
-    ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
+    ]
+    if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
+    args.push(`https://www.youtube.com/watch?v=${videoId}`)
+    execFile(YT_DLP, args, { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
     (err, stdout, stderr) => {
       if (err) {
         const stderrMsg = (stderr || '').slice(0, 500)
@@ -591,15 +593,17 @@ async function searchYouTube(query, continuationToken = null) {
 
   // Fallback to yt-dlp (~10-15s)
   return new Promise((resolve, reject) => {
-    execFile(
-      YT_DLP,
-      [
+    const searchArgs = [
         '--dump-json',
         '--no-warnings',
         '--flat-playlist',
         '--no-check-formats',
-        `ytsearch30:${query}`,
-      ],
+      ]
+    if (COOKIES_PATH) searchArgs.push('--cookies', COOKIES_PATH)
+    searchArgs.push(`ytsearch30:${query}`)
+    execFile(
+      YT_DLP,
+      searchArgs,
       { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
       (err, stdout) => {
         if (err) return reject(new Error(`Search failed: ${err.message}`))
