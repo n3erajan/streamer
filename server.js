@@ -98,21 +98,26 @@ const COOKIES_PATH = (() => {
     cookies = cookies.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     if (!cookies.endsWith('\n')) cookies += '\n'
 
-    // Strip login cookies to prevent yt-dlp from switching player clients.
-    // On datacenter IPs (production) visitor cookies are enough to bypass
-    // bot detection; login cookies cause YouTube to serve a restricted
-    // player response with no video formats.
-    const stripped = stripLoginCookies(cookies)
+    // Use the full cookies (including login cookies) by default.
+    // The login cookies (SID, SAPISID, __Secure-1PSID, etc.) are REQUIRED to
+    // pass YouTube's "Sign in to confirm you're not a bot" check on datacenter
+    // IPs (production servers like Render). Stripping them leaves only anonymous
+    // visitor cookies, which YouTube rejects on datacenter IPs. Set
+    // YT_STRIP_LOGIN_COOKIES=1 to re-enable the old stripping behavior.
+    const strip = process.env.YT_STRIP_LOGIN_COOKIES === '1'
+    const final = strip ? stripLoginCookies(cookies) : cookies
     const originalLines = cookies.split('\n').filter((l) => l.trim()).length
-    const strippedLines = stripped.split('\n').filter((l) => l.trim()).length
+    const finalLines = final.split('\n').filter((l) => l.trim()).length
 
     try {
-      fs.writeFileSync(tmp, stripped, 'utf8')
-      const first = stripped.split('\n')[0]
+      fs.writeFileSync(tmp, final, 'utf8')
+      const first = final.split('\n')[0]
       console.log(
-        `[cookies] Wrote ${stripped.length} chars to ${tmp} ` +
-          `(${originalLines - strippedLines} login cookies stripped). ` +
-          `First line: ${first.slice(0, 80)}`,
+        `[cookies] Wrote ${final.length} chars to ${tmp} ` +
+          `(${originalLines - finalLines} login cookies stripped` +
+          (strip ? '' : ', stripping disabled') +
+          '). First line: ' +
+          first.slice(0, 80),
       )
     } catch (e) {
       console.error(`[cookies] Failed to write temp cookie file: ${e.message}`)
