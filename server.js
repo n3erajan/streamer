@@ -13,6 +13,175 @@ const MOVIES_DIR = path.join(__dirname, 'movies')
 // Ensure movies directory exists
 if (!fs.existsSync(MOVIES_DIR)) fs.mkdirSync(MOVIES_DIR, { recursive: true })
 
+// --- YouTube helpers ---
+
+const YT_DLP = path.join(__dirname, 'yt-dlp.exe')
+// Change this to 'edge', 'firefox', 'brave', or 'opera' if you use a different browser on this machine
+const BROWSER_FOR_COOKIES = 'chrome'
+const ytInfoCache = new Map()
+const ytStreamCache = new Map()
+const ytSearchCache = new Map()
+
+function formatDuration(sec) {
+  if (!sec || sec <= 0) return ''
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = Math.floor(sec % 60)
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function ytThumb(id) {
+  return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+}
+
+function getCookieArgs() {
+  const cookiesFile = path.join(__dirname, 'cookies.txt')
+  if (fs.existsSync(cookiesFile)) {
+    return ['--cookies', cookiesFile]
+  }
+  return ['--cookies-from-browser', BROWSER_FOR_COOKIES]
+}
+
+function getYouTubeInfo(videoId) {
+  if (ytInfoCache.has(videoId)) return Promise.resolve(ytInfoCache.get(videoId))
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      YT_DLP,
+      [
+        '--dump-json',
+        '--no-warnings',
+        '--ignore-no-formats-error',
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 15000 },
+      (err, stdout) => {
+        if (err) return reject(new Error(`yt-dlp info failed: ${err.message}`))
+        try {
+          const data = JSON.parse(stdout.trim().split('\n')[0])
+          const info = {
+            title: data.title || 'YouTube Video',
+            thumbnail: data.thumbnail || null,
+            duration: data.duration || 0,
+            channel: data.channel || data.uploader || '',
+            description: (data.description || '').substring(0, 300),
+          }
+          ytInfoCache.set(videoId, info)
+          setTimeout(() => ytInfoCache.delete(videoId), 30 * 60 * 1000)
+          resolve(info)
+        } catch (e) {
+          reject(new Error('Failed to parse yt-dlp output'))
+        }
+      },
+    )
+  })
+}
+
+function getYouTubeStreamUrl(videoId) {
+  const cached = ytStreamCache.get(videoId)
+  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.url)
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      YT_DLP,
+      [
+        '-f',
+        'b[ext=mp4]/b/best',
+        '-g',
+        '--no-warnings',
+        '--js-runtimes',
+        'node',
+        ...getCookieArgs(),
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
+      (err, stdout) => {
+        if (err)
+          return reject(new Error(`yt-dlp stream failed: ${err.message}`))
+        const urls = stdout
+          .trim()
+          .split('\n')
+          .filter((l) => l.startsWith('http'))
+        if (urls.length > 0) {
+          const result = {
+            video: urls[0],
+            audio: urls.length > 1 ? urls[1] : null,
+          }
+          ytStreamCache.set(videoId, {
+            url: result,
+            expires: Date.now() + 15 * 60 * 1000,
+          })
+          resolve(result)
+        } else {
+          reject(new Error('No stream URL found'))
+        }
+      },
+    )
+  })
+}
+
+function searchYouTube(query, limit = 30) {
+  const cacheKey = `${query}:${limit}`
+  const cached = ytSearchCache.get(cacheKey)
+  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.results)
+
+  return new Promise((resolve, reject) => {
+    execFile(YT_DLP, [
+      '--dump-json', '--no-warnings', '--flat-playlist',
+      `ytsearch${limit}:${query}`,
+    ], { maxBuffer: 10 * 1024 * 1024, timeout: 20000 }, (err, stdout) => {
+      if (err) return reject(new Error(`Search failed: ${err.message}`))
+      const results = stdout.trim().split('\n').filter(Boolean).map(line => {
+        try {
+          const d = JSON.parse(line)
+          return {
+            id: d.id,
+            title: d.title || 'Untitled',
+            channel: d.channel || d.uploader || '',
+            duration: d.duration || 0,
+            thumbnail: ytThumb(d.id),
+            url: d.webpage_url || `https://www.youtube.com/watch?v=${d.id}`,
+          }
+        } catch { return null }
+      }).filter(Boolean)
+
+      ytSearchCache.set(cacheKey, { results, expires: Date.now() + 5 * 60 * 1000 })
+      resolve(results)
+    })
+  })
+}
+
+const FEED_QUERIES = [
+  'trending music', 'viral videos', 'popular movies',
+  'gaming highlights', 'comedy clips', 'sports highlights',
+]
+
+function getYouTubeFeed(limit = 30) {
+  const cached = ytSearchCache.get('__feed__')
+  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.results)
+
+  const perQuery = Math.max(3, Math.ceil(limit / FEED_QUERIES.length))
+  return Promise.all(
+    FEED_QUERIES.map(q => searchYouTube(q, perQuery).catch(() => []))
+  ).then(results => {
+    const merged = []
+    const maxLen = Math.max(...results.map(r => r.length))
+    for (let i = 0; i < maxLen; i++) {
+      for (const arr of results) {
+        if (arr[i]) merged.push(arr[i])
+        if (merged.length >= limit) break
+      }
+      if (merged.length >= limit) break
+    }
+    const seen = new Set()
+    const deduped = merged.filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true })
+
+    ytSearchCache.set('__feed__', { results: deduped, expires: Date.now() + 10 * 60 * 1000 })
+    return deduped
+  })
+}
+
 // --- Helpers ---
 
 function slugify(name) {
@@ -439,7 +608,7 @@ async function scanMovies() {
     }
 
     const title = meta.title || titleFromSlug(slug)
-    const description = meta.description || 'Watch together on Rave'
+    const description = meta.description || ''
     const year = meta.year || null
 
     movies.push({
@@ -530,10 +699,113 @@ app.get('/watch/:slug', async (req, res) => {
   })
 })
 
+// --- YouTube routes ---
+
+app.get('/youtube', async (req, res) => {
+  const input = (req.query.q || req.query.url || '').trim()
+
+  // If the input is a YouTube URL or an exact 11-character video ID, redirect to the player
+  if (input) {
+    const match = input.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/)
+    if (match) {
+      return res.redirect(`/youtube/watch/${match[1]}`)
+    }
+    if (/^[a-zA-Z0-9_-]{11}$/.test(input)) {
+      return res.redirect(`/youtube/watch/${input}`)
+    }
+  }
+
+  const query = input
+  let results = []
+  let error = null
+  let isSearch = false
+
+  try {
+    if (query) {
+      isSearch = true
+      results = await searchYouTube(query, 30)
+    } else {
+      results = await getYouTubeFeed(30)
+    }
+  } catch (e) {
+    error = e.message
+  }
+
+  res.render('youtube-browser', {
+    query,
+    results,
+    error,
+    isSearch,
+  })
+})
+
+app.get('/youtube/watch/:id', async (req, res) => {
+  const videoId = req.params.id
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return res.status(400).send('Invalid video ID')
+  }
+
+  let info
+  try {
+    info = await getYouTubeInfo(videoId)
+  } catch (err) {
+    return res.status(500).send(`Error fetching info: ${err.message}`)
+  }
+
+  const title = info?.title || 'YouTube Video'
+  const thumb = info?.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+  const description = info?.description || ''
+  const channel = info?.uploader || ''
+
+  res.render('youtube-player', {
+    videoId,
+    title,
+    thumb,
+    pageUrl: `${BASE_URL}/youtube/watch/${videoId}`,
+    videoUrl: `${BASE_URL}/youtube-stream/${videoId}.mp4`,
+    description,
+    channel,
+    info,
+    formatDuration,
+    BASE_URL
+  })
+})
+
+// Async related videos API
+app.get('/api/youtube/related', async (req, res) => {
+  try {
+    const title = req.query.title || ''
+    const videoId = req.query.videoId || ''
+    if (!title) return res.json([])
+    
+    let related = await searchYouTube(title.substring(0, 40), 12)
+    related = related.filter(r => r.id !== videoId).slice(0, 8)
+    res.json(related)
+  } catch (err) {
+    res.json([])
+  }
+})
+
+// --- YouTube stream redirect ---
+
+app.get('/youtube-stream/:id.mp4', async (req, res) => {
+  const videoId = req.params.id
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return res.status(400).send('Invalid video ID')
+  }
+
+  try {
+    const streamUrls = await getYouTubeStreamUrl(videoId)
+    res.redirect(302, streamUrls.video)
+  } catch (e) {
+    res.status(500).send(`Failed to fetch YouTube stream: ${e.message}`)
+  }
+})
+
 // --- MP4 range-serve fallback (express.static handles it, but just in case) ---
 
 app.listen(PORT, async () => {
-  console.log(`Movie server running on ${BASE_URL}`)
+  console.log(`Stream Server running on ${BASE_URL}`)
   console.log(`Serving from: ${MOVIES_DIR}`)
   const movies = await scanMovies()
   console.log(`${movies.length} movie(s) found`)

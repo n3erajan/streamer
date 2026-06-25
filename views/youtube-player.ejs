@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title><%= title %></title>
+
+  <meta property="og:type"        content="video.movie" />
+  <meta property="og:title"       content="<%= title %>" />
+  <meta property="og:description" content="<%= description %>" />
+  <meta property="og:url"         content="<%= pageUrl %>" />
+  <% if (thumb) { %><meta property="og:image" content="<%= thumb %>" /><% } %>
+  <meta property="og:video"       content="<%= videoUrl %>" />
+  <meta property="og:video:type"  content="video/mp4" />
+  <meta property="og:video:secure_url" content="<%= videoUrl %>" />
+  <meta name="og:author" content="neerajan" />
+  <meta name="author" content="neerajan" />
+  <meta property="og:site_name" content="YouTube" />
+  <meta property="al:android:app_name" content="YouTube" />
+  <meta property="al:ios:app_name" content="YouTube" />
+  <meta name="application-name" content="YouTube" />
+  <meta property="og:provider" content="YOUTUBE" />
+
+  <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+  <%- include('partials/styles') %>
+  <style>
+    body{
+      background:var(--bg);
+      color:var(--text);
+      margin:0;
+      font-family:system-ui,-apple-system,sans-serif;
+    }
+    .player-wrap{background:#000;display:flex;flex-direction:column;align-items:center;width:100%; border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,0.5);}
+    video{width:100%;max-width:960px;background:#000;display:block}
+    .info{padding:16px 20px;width:100%;max-width:960px;background:var(--card);}
+    .info h2{font-size:1.3rem;font-weight:600;margin-bottom:8px;color:#fff;}
+    .info small{color:var(--text-dim);font-size:0.9rem;}
+    .related{margin-top:40px; width: 100%; max-width: 960px; margin-left: auto; margin-right: auto;}
+    .related h3{margin-bottom:20px;font-size:1.2rem;font-weight:600;color:#fff;}
+  </style>
+</head>
+<body>
+  <%- include('partials/nav') %>
+  
+  <main class="main-container" style="display:flex; flex-direction:column; align-items:center;">
+    <div class="player-wrap" id="player-container">
+      <video id="player" playsinline webkit-playsinline preload="metadata" poster="<%= thumb || '' %>" src="<%= videoUrl %>"></video>
+    </div>
+    <div class="info" style="position: relative;">
+      <button onclick="navigator.clipboard.writeText(window.location.href); this.innerText='Copied!'; setTimeout(() => this.innerText='Share Link', 2000)" style="position: absolute; right: 20px; top: 20px; padding: 6px 14px; border-radius: 6px; background: var(--accent); color: white; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background 0.2s;">Share Link</button>
+      <h2 style="padding-right: 100px;"><%= title %></h2>
+      <small><%= channel %></small>
+      <p style="margin-top: 12px; color: var(--text-dim); line-height: 1.5; font-size: 0.95rem;"><%= description %></p>
+    </div>
+  </main>
+
+  <div class="related" id="related-container" style="display: none;">
+    <h3>Related Videos</h3>
+    <div class="grid" id="related-grid">
+      <!-- Related videos will be injected here -->
+    </div>
+  </div>
+
+  <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+  <script>
+    const v = document.getElementById('player');
+    
+    // Initialize Plyr
+    const player = new Plyr(v, {
+      controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
+      autoplay: true
+    });
+
+    // Fetch related videos asynchronously
+    async function loadRelated() {
+      try {
+        const title = encodeURIComponent("<%= title.replace(/"/g, '&quot;') %>");
+        const videoId = "<%= videoId %>";
+        const res = await fetch(`/api/youtube/related?title=${title}&videoId=${videoId}`);
+        if (!res.ok) return;
+        
+        const related = await res.json();
+        if (related.length > 0) {
+          const container = document.getElementById('related-container');
+          const grid = document.getElementById('related-grid');
+          
+          // Extract the first video for the "Up Next" card
+          const nextVideo = related.shift();
+          const nextHtml = `
+            <div style="margin-top: 24px; padding: 16px; background: rgba(255,255,255,0.05); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+              <h3 style="margin-top:0; margin-bottom: 12px; font-size: 1.1rem; color: #fff;">Up Next</h3>
+              <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+                <img src="${nextVideo.thumbnail}" style="width: 160px; border-radius: 8px; aspect-ratio: 16/9; object-fit: cover;" alt="Up Next Thumbnail" />
+                <div style="flex: 1; min-width: 200px;">
+                  <div style="font-weight: 600; font-size: 1rem; margin-bottom: 4px;">${nextVideo.title}</div>
+                  <div style="color: var(--text-dim); font-size: 0.9rem; margin-bottom: 12px;">${nextVideo.channel}</div>
+                  <a href="/youtube/watch/${nextVideo.id}" style="display: inline-block; background: var(--accent); color: #fff; text-decoration: none; padding: 10px 24px; border-radius: 8px; font-weight: 600; font-size: 1rem; transition: background 0.2s;">▶ Play Next</a>
+                </div>
+              </div>
+            </div>
+          `;
+          document.querySelector('.info').insertAdjacentHTML('beforeend', nextHtml);
+
+          if (related.length > 0) {
+            let html = '';
+            related.forEach(v => {
+              const min = Math.floor(v.duration / 60);
+              const sec = String(v.duration % 60).padStart(2, '0');
+              const duration = v.duration ? `<span class="duration-badge">${min}:${sec}</span>` : '';
+              
+              html += `
+                <a class="card" href="/youtube/watch/${v.id}">
+                  <div class="thumb-wrap">
+                    <img src="${v.thumbnail}" alt="${v.title.replace(/"/g, '&quot;')}" loading="lazy" />
+                    ${duration}
+                  </div>
+                  <div class="card-info">
+                    <div class="card-title">${v.title}</div>
+                    <div class="card-meta">${v.channel}</div>
+                  </div>
+                </a>
+              `;
+            });
+            
+            grid.innerHTML = html;
+            container.style.display = 'block';
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load related videos', e);
+      }
+    }
+    
+    loadRelated();
+  </script>
+</body>
+</html>

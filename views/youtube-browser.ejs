@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title><%= isSearch ? `Search: ${query}` : 'YouTube' %></title>
+  <%- include('partials/styles') %>
+  <style>
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
+    h1 { font-size: 1.8rem; font-weight: 700; color: #fff; }
+    .search-wrap { display: flex; gap: 8px; max-width: 600px; flex: 1; }
+    .search-wrap input { flex: 1; padding: 10px 16px; border-radius: 999px; border: 1px solid rgba(255,255,255,.08); background: var(--card); color: var(--text); outline: none; }
+    .search-wrap input:focus { border-color: var(--accent); }
+    .search-wrap button { padding: 10px 20px; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; transition: background .2s; }
+    .search-wrap button:hover { background: var(--accent-glow); }
+    .pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+    .pills a { padding: 6px 14px; border-radius: 20px; background: var(--card); border: 1px solid rgba(255,255,255,.08); color: var(--text-dim); text-decoration: none; font-size: .85rem; transition: background .2s, color .2s; }
+    .pills a:hover { background: var(--card-hover); color: var(--text); }
+    .page-title { margin-bottom: 16px; font-size: 1.3rem; font-weight: 600; color: #fff; }
+  </style>
+</head>
+<body>
+  <%- include('partials/nav') %>
+  
+  <main class="main-container">
+    <div class="page-header">
+      <h1>YouTube Browser</h1>
+      <form class="search-wrap" action="/youtube" method="get">
+        <input type="text" name="q" placeholder="Search YouTube or paste URL..." value="<%= query %>" />
+        <button type="submit">Search</button>
+      </form>
+    </div>
+
+    <div class="pills">
+      <% const categories = ['Music', 'Gaming', 'Comedy', 'Sports', 'News', 'Education', 'Trailers', 'Technology'] %>
+      <% categories.forEach(c => { %>
+        <a href="/youtube?q=<%= encodeURIComponent(c) %>"><%= c %></a>
+      <% }) %>
+    </div>
+
+    <% if (!isSearch) { %><div class="page-title">Trending Feed</div><% } %>
+
+    <% if (error) { %>
+      <p class="empty">Error: <%= error %></p>
+    <% } else if (!results.length) { %>
+      <p class="empty">No results found.</p>
+    <% } else { %>
+      <div class="grid">
+        <% results.forEach(v => { %>
+          <a class="card" href="/youtube/watch/<%= v.id %>">
+            <div class="thumb-wrap">
+              <img src="<%= v.thumbnail %>" alt="<%= v.title %>" loading="lazy" />
+              <% if (v.duration) { %><span class="duration-badge"><%= Math.floor(v.duration / 60) %>:<%= String(v.duration % 60).padStart(2, '0') %></span><% } %>
+            </div>
+            <div class="card-info">
+              <div class="card-title"><%= v.title %></div>
+              <div class="card-meta"><%= v.channel %></div>
+            </div>
+          </a>
+        <% }) %>
+      </div>
+    <% } %>
+  </main>
+</body>
+</html>
