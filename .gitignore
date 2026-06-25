@@ -154,3 +154,4 @@ movies*
 .yt-cookies-tmp.txt
 cookies.txt
 yt-dlp.exe
+.yt-cookies-stripped.txt

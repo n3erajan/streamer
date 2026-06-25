@@ -57,6 +57,34 @@ function ytThumb(id) {
   return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
 }
 
+// Cookie names that indicate a logged-in Google/YouTube session.
+// These must be stripped: with login cookies present, yt-dlp switches
+// from the android_vr player client to web_safari/tv-downloaded, which
+// YouTube restricts to storyboard-only responses (no video/audio formats).
+// The visitor/consent cookies (VISITOR_INFO1_LIVE, YSC, etc.) are enough
+// to pass bot detection on datacenter IPs without triggering the login
+// player path.
+const LOGIN_COOKIE_NAMES = new Set([
+  'LOGIN_INFO', 'SID', 'HSID', 'SSID', 'APISID', 'SAPISID',
+  '__Secure-1PSID', '__Secure-3PSID',
+  '__Secure-1PAPISID', '__Secure-3PAPISID',
+  '__Secure-1PSIDTS', '__Secure-3PSIDTS',
+  '__Secure-1PSIDCC', '__Secure-3PSIDCC', 'SIDCC',
+])
+
+function stripLoginCookies(rawCookies) {
+  return rawCookies
+    .split('\n')
+    .filter((line) => {
+      if (line.startsWith('#') || line.trim() === '') return true
+      // Extract cookie name: second whitespace-delimited token
+      const parts = line.split(/\s+/)
+      const cookieName = parts[5]
+      return cookieName && !LOGIN_COOKIE_NAMES.has(cookieName)
+    })
+    .join('\n')
+}
+
 // Resolve cookie source: env var > local cookies.txt > browser
 const COOKIES_PATH = (() => {
   if (process.env.YT_COOKIES) {
@@ -69,11 +97,22 @@ const COOKIES_PATH = (() => {
       cookies = cookies.slice(1, -1)
     cookies = cookies.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     if (!cookies.endsWith('\n')) cookies += '\n'
+
+    // Strip login cookies to prevent yt-dlp from switching player clients.
+    // On datacenter IPs (production) visitor cookies are enough to bypass
+    // bot detection; login cookies cause YouTube to serve a restricted
+    // player response with no video formats.
+    const stripped = stripLoginCookies(cookies)
+    const originalLines = cookies.split('\n').filter((l) => l.trim()).length
+    const strippedLines = stripped.split('\n').filter((l) => l.trim()).length
+
     try {
-      fs.writeFileSync(tmp, cookies, 'utf8')
-      const first = cookies.split('\n')[0]
+      fs.writeFileSync(tmp, stripped, 'utf8')
+      const first = stripped.split('\n')[0]
       console.log(
-        `[cookies] Wrote ${cookies.length} chars to ${tmp}. First line: ${first.slice(0, 80)}`,
+        `[cookies] Wrote ${stripped.length} chars to ${tmp} ` +
+          `(${originalLines - strippedLines} login cookies stripped). ` +
+          `First line: ${first.slice(0, 80)}`,
       )
     } catch (e) {
       console.error(`[cookies] Failed to write temp cookie file: ${e.message}`)
@@ -477,10 +516,11 @@ const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 function runYtDlpForStreamUrl(videoId, { timeout = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
-    // NOTE: Do NOT pass cookies for stream extraction. Logged-in session
-    // cookies cause yt-dlp to switch to the web_safari client, which
-    // YouTube restricts to storyboard-only responses (no video/audio
-    // formats). Without cookies yt-dlp uses android_vr which works.
+    // Stripped cookies (login cookies removed) are safe to pass: they
+    // provide visitor/consent cookies needed to bypass bot detection on
+    // datacenter IPs (production) without triggering yt-dlp's login player
+    // path that returns only storyboards.
+    if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
     args.push(`https://www.youtube.com/watch?v=${videoId}`)
 
     execFile(
