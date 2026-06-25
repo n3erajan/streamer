@@ -68,6 +68,39 @@ const ytStreamCache = new Map()
 const ytSearchCache = new Map()
 const ytHomeCache = new Map()
 
+// In-flight stream fetches: maps videoId -> Promise. When a fetch for a video
+// is already running, concurrent callers await the SAME promise instead of
+// spawning another yt-dlp process. Each yt-dlp invocation (with the EJS plugin
+// + Node child processes for the n-challenge/PO-token) uses ~100-150MB and can
+// run for up to 60s, so duplicate spawns on a single video click (pre-warm +
+// foreground request + browser retries) would instantly OOM a 512MB instance.
+const ytStreamInflight = new Map()
+
+// Global cap on concurrent yt-dlp processes (across ALL videos). Each process
+// holds ~100-150MB for up to 60s; 2 is the safe ceiling on a 512MB instance
+// alongside the Node server itself. Extra callers queue instead of spawning.
+// Override with YT_DLP_MAX_CONCURRENCY env var.
+const YT_DLP_MAX_CONCURRENCY = Number(process.env.YT_DLP_MAX_CONCURRENCY) || 2
+const ytDlpActive = { count: 0, queue: [] }
+function acquireYtDlpSlot() {
+  return new Promise((resolve) => {
+    if (ytDlpActive.count < YT_DLP_MAX_CONCURRENCY) {
+      ytDlpActive.count++
+      resolve()
+    } else {
+      ytDlpActive.queue.push(resolve)
+    }
+  })
+}
+function releaseYtDlpSlot() {
+  const next = ytDlpActive.queue.shift()
+  if (next) {
+    next() // hands the slot directly to the next waiter (count stays the same)
+  } else {
+    ytDlpActive.count--
+  }
+}
+
 function formatDuration(sec) {
   if (!sec || sec <= 0) return ''
   const h = Math.floor(sec / 3600)
@@ -551,60 +584,65 @@ const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 // fallback. Override with the YT_DLP_TIMEOUT_MS env var.
 const YT_DLP_TIMEOUT_MS = Number(process.env.YT_DLP_TIMEOUT_MS) || 60000
 
-function runYtDlpForStreamUrl(videoId, { timeout = YT_DLP_TIMEOUT_MS } = {}) {
-  return new Promise((resolve, reject) => {
-    const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
-    // Enable a JS runtime so yt-dlp can solve YouTube's n-signature challenge.
-    // Without this, yt-dlp 2026.x returns only storyboard formats ("Requested
-    // format is not available"). Only `deno` is enabled by default; node is
-    // present on both dev (Node) and Render (Node) but must be opted in.
-    args.push('--js-runtimes', YT_JS_RUNTIME)
-    if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
-    args.push(`https://www.youtube.com/watch?v=${videoId}`)
+async function runYtDlpForStreamUrl(videoId, { timeout = YT_DLP_TIMEOUT_MS } = {}) {
+  await acquireYtDlpSlot()
+  try {
+    return await new Promise((resolve, reject) => {
+      const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
+      // Enable a JS runtime so yt-dlp can solve YouTube's n-signature challenge.
+      // Without this, yt-dlp 2026.x returns only storyboard formats ("Requested
+      // format is not available"). Only `deno` is enabled by default; node is
+      // present on both dev (Node) and Render (Node) but must be opted in.
+      args.push('--js-runtimes', YT_JS_RUNTIME)
+      if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
+      args.push(`https://www.youtube.com/watch?v=${videoId}`)
 
-    execFile(
-      YT_DLP,
-      args,
-      { maxBuffer: 10 * 1024 * 1024, timeout },
-      (err, stdout, stderr) => {
-        if (err) {
-          const stderrMsg = (stderr || '').slice(0, 500)
-          // Detect timeout vs real error. When the timeout fires, Node sends
-          // SIGTERM and yt-dlp produces NO stderr — without this check the
-          // logged message is the useless generic "Command failed: ..." wrapper.
-          const timedOut = err.killed && err.signal === 'SIGTERM'
-          if (timedOut) {
-            console.error(
-              `[yt-stream] yt-dlp TIMED OUT after ${timeout}ms for ${videoId} ` +
-                `(killed via ${err.signal || 'SIGTERM'}). This usually means ` +
-                `the n-challenge solve + PO-token generation is slow on this IP.`,
-            )
-            return reject(
-              new Error(
-                `yt-dlp timed out after ${timeout}ms (JS challenge/PO token slow)`,
-              ),
+      execFile(
+        YT_DLP,
+        args,
+        { maxBuffer: 10 * 1024 * 1024, timeout },
+        (err, stdout, stderr) => {
+          if (err) {
+            const stderrMsg = (stderr || '').slice(0, 500)
+            // Detect timeout vs real error. When the timeout fires, Node sends
+            // SIGTERM and yt-dlp produces NO stderr — without this check the
+            // logged message is the useless generic "Command failed: ..." wrapper.
+            const timedOut = err.killed && err.signal === 'SIGTERM'
+            if (timedOut) {
+              console.error(
+                `[yt-stream] yt-dlp TIMED OUT after ${timeout}ms for ${videoId} ` +
+                  `(killed via ${err.signal || 'SIGTERM'}). This usually means ` +
+                  `the n-challenge solve + PO-token generation is slow on this IP.`,
+              )
+              return reject(
+                new Error(
+                  `yt-dlp timed out after ${timeout}ms (JS challenge/PO token slow)`,
+                ),
+              )
+            }
+            if (stderrMsg)
+              console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
+            return reject(new Error(stderrMsg || err.message))
+          }
+          const urls = stdout
+            .trim()
+            .split('\n')
+            .filter((l) => l.startsWith('http'))
+          if (urls.length === 0) return reject(new Error('No stream URL found'))
+          if (urls.length > 1) {
+            console.warn(
+              `[yt-stream] ${videoId}: only got separate video+audio streams ` +
+                `(progressive mp4 unavailable this time). Proxy currently only ` +
+                `serves the video URL — audio will be missing for this request.`,
             )
           }
-          if (stderrMsg)
-            console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
-          return reject(new Error(stderrMsg || err.message))
-        }
-        const urls = stdout
-          .trim()
-          .split('\n')
-          .filter((l) => l.startsWith('http'))
-        if (urls.length === 0) return reject(new Error('No stream URL found'))
-        if (urls.length > 1) {
-          console.warn(
-            `[yt-stream] ${videoId}: only got separate video+audio streams ` +
-              `(progressive mp4 unavailable this time). Proxy currently only ` +
-              `serves the video URL — audio will be missing for this request.`,
-          )
-        }
-        resolve({ video: urls[0], audio: urls.length > 1 ? urls[1] : null })
-      },
-    )
-  })
+          resolve({ video: urls[0], audio: urls.length > 1 ? urls[1] : null })
+        },
+      )
+    })
+  } finally {
+    releaseYtDlpSlot()
+  }
 }
 
 // YouTube's signature/N-challenge logic changes often; a yt-dlp binary that
@@ -638,61 +676,80 @@ async function getYouTubeStreamUrl(videoId) {
   const cached = ytStreamCache.get(videoId)
   if (cached && cached.expires > Date.now()) return cached.url
 
-  const cacheAndReturn = (result) => {
-    ytStreamCache.set(videoId, {
-      url: result,
-      expires: Date.now() + 15 * 60 * 1000,
-    })
-    console.log(
-      `[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`,
-    )
-    return result
+  // Deduplicate: if a fetch for this video is already in flight, await the same
+  // promise instead of spawning another yt-dlp process. A single video click
+  // triggers pre-warm + the foreground stream request + possible browser
+  // retries — without this, each one spawns its own ~100-150MB yt-dlp process
+  // and OOMs a 512MB instance.
+  const existing = ytStreamInflight.get(videoId)
+  if (existing) {
+    console.log(`[yt-stream] Reusing in-flight fetch for ${videoId}`)
+    return existing
   }
 
-  let lastErr
+  const fetchPromise = (async () => {
+    const cacheAndReturn = (result) => {
+      ytStreamCache.set(videoId, {
+        url: result,
+        expires: Date.now() + 15 * 60 * 1000,
+      })
+      console.log(
+        `[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`,
+      )
+      return result
+    }
 
-  // Attempt 1
-  try {
-    return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
-  } catch (e) {
-    lastErr = e
-    console.warn(
-      `[yt-stream] Attempt 1 failed for ${videoId}: ${e.message.slice(0, 200)}`,
-    )
-  }
+    let lastErr
 
-  // Attempt 2 — plain retry. Both the bot-check and format-availability
-  // failures are sometimes transient per-request rather than per-video.
-  try {
-    return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
-  } catch (e) {
-    lastErr = e
-    console.warn(
-      `[yt-stream] Attempt 2 (retry) failed for ${videoId}: ${e.message.slice(0, 200)}`,
-    )
-  }
+    // Attempt 1
+    try {
+      return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
+    } catch (e) {
+      lastErr = e
+      console.warn(
+        `[yt-stream] Attempt 1 failed for ${videoId}: ${e.message.slice(0, 200)}`,
+      )
+    }
 
-  // Attempt 3 — if this smells like a stale-binary problem specifically
-  // (not a cookie/auth problem), try updating yt-dlp once, then retry.
-  const looksStale =
-    /Requested format is not available|Unable to extract|unsupported url/i.test(
-      lastErr.message,
-    )
-  if (looksStale) {
-    const updated = await tryUpdateYtDlp()
-    if (updated) {
-      try {
-        return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
-      } catch (e) {
-        lastErr = e
-        console.error(
-          `[yt-stream] Still failing for ${videoId} after self-update: ${e.message.slice(0, 200)}`,
-        )
+    // Attempt 2 — plain retry. Both the bot-check and format-availability
+    // failures are sometimes transient per-request rather than per-video.
+    try {
+      return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
+    } catch (e) {
+      lastErr = e
+      console.warn(
+        `[yt-stream] Attempt 2 (retry) failed for ${videoId}: ${e.message.slice(0, 200)}`,
+      )
+    }
+
+    // Attempt 3 — if this smells like a stale-binary problem specifically
+    // (not a cookie/auth problem), try updating yt-dlp once, then retry.
+    const looksStale =
+      /Requested format is not available|Unable to extract|unsupported url/i.test(
+        lastErr.message,
+      )
+    if (looksStale) {
+      const updated = await tryUpdateYtDlp()
+      if (updated) {
+        try {
+          return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
+        } catch (e) {
+          lastErr = e
+          console.error(
+            `[yt-stream] Still failing for ${videoId} after self-update: ${e.message.slice(0, 200)}`,
+          )
+        }
       }
     }
-  }
 
-  throw lastErr
+    throw lastErr
+  })()
+
+  ytStreamInflight.set(videoId, fetchPromise)
+  // Always clear the in-flight entry on settle so a failed fetch can be retried
+  // by a later request (don't cache rejections).
+  fetchPromise.finally(() => ytStreamInflight.delete(videoId))
+  return fetchPromise
 }
 
 // Shared helper: cross-populate info cache from search results
