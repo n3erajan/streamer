@@ -1,3 +1,4 @@
+require('dotenv').config()
 const express = require('express')
 const fs = require('fs')
 const path = require('path')
@@ -7,7 +8,7 @@ const app = express()
 app.set('view engine', 'ejs')
 app.set('views', path.join(__dirname, 'views'))
 const PORT = 8080
-const BASE_URL = 'https://stream.nirajan-paudel.com.np'
+const BASE_URL = 'https://localhost:8080'
 const MOVIES_DIR = path.join(__dirname, 'movies')
 
 // Ensure movies directory exists
@@ -20,7 +21,12 @@ const YT_DLP = (() => {
   const { execSync } = require('child_process')
   try {
     const which = process.platform === 'win32' ? 'where' : 'which'
-    const found = execSync(`${which} yt-dlp`, { encoding: 'utf8', stdio: 'pipe' }).trim().split('\n')[0]
+    const found = execSync(`${which} yt-dlp`, {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    })
+      .trim()
+      .split('\n')[0]
     if (found) return found
   } catch {}
   return path.join(__dirname, 'yt-dlp.exe')
@@ -46,11 +52,20 @@ function ytThumb(id) {
   return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
 }
 
-function getCookieArgs() {
-  const cookiesFile = path.join(__dirname, 'cookies.txt')
-  if (fs.existsSync(cookiesFile)) {
-    return ['--cookies', cookiesFile]
+// Resolve cookie source: env var > local cookies.txt > browser
+const COOKIES_PATH = (() => {
+  if (process.env.YT_COOKIES) {
+    const tmp = path.join(__dirname, '.yt-cookies-tmp.txt')
+    try { fs.writeFileSync(tmp, process.env.YT_COOKIES, 'utf8') } catch {}
+    return tmp
   }
+  const local = path.join(__dirname, 'cookies.txt')
+  if (fs.existsSync(local)) return local
+  return null
+})()
+
+function getCookieArgs() {
+  if (COOKIES_PATH) return ['--cookies', COOKIES_PATH]
   return ['--cookies-from-browser', BROWSER_FOR_COOKIES]
 }
 
@@ -218,7 +233,10 @@ async function innertubeBrowse(continuationToken = null) {
   }
 
   const resultData = { results, continuationToken: nextToken }
-  ytHomeCache.set(cacheKey, { data: resultData, expires: Date.now() + 30 * 60 * 1000 })
+  ytHomeCache.set(cacheKey, {
+    data: resultData,
+    expires: Date.now() + 30 * 60 * 1000,
+  })
   return resultData
 }
 
@@ -488,10 +506,9 @@ function getYouTubeStreamUrl(videoId) {
   const cached = ytStreamCache.get(videoId)
   if (cached && cached.expires > Date.now()) return Promise.resolve(cached.url)
 
-  // Go straight to yt-dlp — InnerTube /player is blocked for unauthenticated requests
-  const cookiesFile = path.join(__dirname, 'cookies.txt')
-  const cookieArgs = fs.existsSync(cookiesFile)
-    ? ['--cookies', cookiesFile]
+  console.log(`[yt-stream] Fetching stream URL for ${videoId} using ${YT_DLP}`)
+  const cookieArgs = COOKIES_PATH
+    ? ['--cookies', COOKIES_PATH]
     : ['--cookies-from-browser', BROWSER_FOR_COOKIES]
 
   return new Promise((resolve, reject) => {
@@ -509,9 +526,13 @@ function getYouTubeStreamUrl(videoId) {
         `https://www.youtube.com/watch?v=${videoId}`,
       ],
       { maxBuffer: 10 * 1024 * 1024, timeout: 20000 },
-      (err, stdout) => {
-        if (err)
+      (err, stdout, stderr) => {
+        if (err) {
+          console.error(`[yt-stream] yt-dlp failed for ${videoId}: ${err.message}`)
+          if (stderr) console.error(`[yt-stream] stderr: ${stderr.slice(0, 500)}`)
           return reject(new Error(`yt-dlp stream failed: ${err.message}`))
+        }
+        console.log(`[yt-stream] yt-dlp stdout for ${videoId}: ${stdout.slice(0, 200)}`)
         const urls = stdout
           .trim()
           .split('\n')
@@ -525,8 +546,10 @@ function getYouTubeStreamUrl(videoId) {
             url: result,
             expires: Date.now() + 15 * 60 * 1000,
           })
+          console.log(`[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`)
           resolve(result)
         } else {
+          console.error(`[yt-stream] No stream URL found for ${videoId}. stdout: ${stdout.slice(0, 300)}`)
           reject(new Error('No stream URL found'))
         }
       },
@@ -1040,7 +1063,8 @@ let movieCacheTime = 0
 const MOVIE_CACHE_TTL = 60_000
 
 async function scanMovies() {
-  if (movieCache && Date.now() - movieCacheTime < MOVIE_CACHE_TTL) return movieCache
+  if (movieCache && Date.now() - movieCacheTime < MOVIE_CACHE_TTL)
+    return movieCache
   if (!fs.existsSync(MOVIES_DIR)) return []
 
   const entries = fs.readdirSync(MOVIES_DIR)
@@ -1118,7 +1142,9 @@ app.use((req, res, next) => {
 
 // --- Static files from movies/ ---
 
-app.use('/favicon.ico', (req, res) => res.sendFile(path.join(__dirname, 'public', 'favicon.ico')))
+app.use('/favicon.ico', (req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'favicon.ico')),
+)
 
 // --- Video streaming (honors browser Range requests as-is) ---
 app.get('/movies/:file', async (req, res, next) => {
@@ -1126,7 +1152,11 @@ app.get('/movies/:file', async (req, res, next) => {
   if (!/\.(mp4|webm|mkv)$/i.test(fileName)) return next()
   const filePath = path.join(MOVIES_DIR, fileName)
   let stat
-  try { stat = await fs.promises.stat(filePath) } catch { return res.status(404).end() }
+  try {
+    stat = await fs.promises.stat(filePath)
+  } catch {
+    return res.status(404).end()
+  }
 
   const fileSize = stat.size
   const range = req.headers.range
@@ -1154,11 +1184,12 @@ app.get('/movies/:file', async (req, res, next) => {
     'Cache-Control': 'public, max-age=86400',
   })
 
-  fs.createReadStream(filePath, { start, end }).pipe(res)
-  .on('error', (err) => {
-    console.error(`Stream error for ${fileName}: ${err.message}`)
-    res.end()
-  })
+  fs.createReadStream(filePath, { start, end })
+    .pipe(res)
+    .on('error', (err) => {
+      console.error(`Stream error for ${fileName}: ${err.message}`)
+      res.end()
+    })
 })
 
 app.use('/movies', express.static(MOVIES_DIR, { dotfiles: 'allow' }))
@@ -1183,13 +1214,20 @@ function generateHlsSegments(slug, videoPath) {
       'ffmpeg',
       [
         '-y',
-        '-i', videoPath,
-        '-c', 'copy',
-        '-map', '0',
-        '-f', 'hls',
-        '-hls_time', '6',
-        '-hls_list_size', '0',
-        '-hls_segment_filename', path.join(slugDir, 'seg-%03d.ts'),
+        '-i',
+        videoPath,
+        '-c',
+        'copy',
+        '-map',
+        '0',
+        '-f',
+        'hls',
+        '-hls_time',
+        '6',
+        '-hls_list_size',
+        '0',
+        '-hls_segment_filename',
+        path.join(slugDir, 'seg-%03d.ts'),
         path.join(slugDir, 'playlist.m3u8'),
       ],
       { maxBuffer: 1024 * 1024 * 100 },
@@ -1200,7 +1238,9 @@ function generateHlsSegments(slug, videoPath) {
         resolve()
       },
     )
-  }).catch((err) => console.error(`HLS generation failed for ${slug}: ${err.message}`))
+  }).catch((err) =>
+    console.error(`HLS generation failed for ${slug}: ${err.message}`),
+  )
 
   pendingHls.set(slug, job)
   return job
@@ -1227,7 +1267,8 @@ app.get('/api/hls/:slug.m3u8', async (req, res) => {
     await new Promise((r) => setTimeout(r, 500))
   }
 
-  if (!fs.existsSync(playlistPath)) return res.status(503).send('Generating playlist...')
+  if (!fs.existsSync(playlistPath))
+    return res.status(503).send('Generating playlist...')
 
   const playlist = fs.readFileSync(playlistPath, 'utf8')
   // Rewrite segment paths to absolute URLs through our proxy
@@ -1239,7 +1280,11 @@ app.get('/api/hls/:slug.m3u8', async (req, res) => {
 })
 
 app.get('/api/hls/:slug/:segment', (req, res) => {
-  const segPath = path.join(HLS_CACHE, req.params.slug, path.basename(req.params.segment))
+  const segPath = path.join(
+    HLS_CACHE,
+    req.params.slug,
+    path.basename(req.params.segment),
+  )
   if (!fs.existsSync(segPath)) return res.status(404).end()
   const stat = fs.statSync(segPath)
   res.set({
@@ -1357,7 +1402,8 @@ app.get('/youtube/watch/:id', async (req, res) => {
   // Pre-warm the stream cache in the background — don't await it.
   // By the time the browser parses the HTML and requests the stream URL,
   // yt-dlp will likely have already finished.
-  getYouTubeStreamUrl(videoId).catch(() => {})
+  console.log(`[youtube/watch] Pre-warming stream for ${videoId}`)
+  getYouTubeStreamUrl(videoId).catch((e) => console.log(`[youtube/watch] Pre-warm failed for ${videoId}: ${e.message}`))
 
   // Single /next call gets BOTH video info AND related videos (~0.5s)
   let info = {
@@ -1402,7 +1448,7 @@ app.get('/youtube/watch/:id', async (req, res) => {
     title,
     thumb,
     pageUrl: `${BASE_URL}/youtube/watch/${videoId}`,
-    videoUrl: `${BASE_URL}/youtube-stream/${videoId}.mp4`,
+    videoUrl: `/youtube-stream/${videoId}.mp4`,
     description,
     channel,
     info,
@@ -1457,10 +1503,13 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
     return res.status(400).send('Invalid video ID')
   }
 
+  console.log(`[youtube-stream] Request for ${videoId}`)
   try {
     const streamUrls = await getYouTubeStreamUrl(videoId)
+    console.log(`[youtube-stream] Redirecting ${videoId} to ${streamUrls.video.slice(0, 80)}...`)
     res.redirect(302, streamUrls.video)
   } catch (e) {
+    console.error(`[youtube-stream] Failed for ${videoId}: ${e.message}`)
     res.status(500).send(`Failed to fetch YouTube stream: ${e.message}`)
   }
 })

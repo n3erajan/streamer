@@ -150,3 +150,7 @@ vite.config.ts.timestamp-*
 
 .hls-cache*
 movies*
+.web-cache/
+.yt-cookies-tmp.txt
+cookies.txt
+yt-dlp.exe

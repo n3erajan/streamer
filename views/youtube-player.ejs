@@ -220,6 +220,14 @@
   <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
   <script>
     const v = document.getElementById('player');
+    console.log('[yt-player] video src:', v ? v.src : 'no element');
+    console.log('[yt-player] videoUrl from template:', '<%= videoUrl %>');
+    v.addEventListener('error', () => {
+      console.error('[yt-player] video error:', v.error ? v.error.message : 'unknown', v.networkState);
+    });
+    v.addEventListener('loadstart', () => console.log('[yt-player] loadstart'));
+    v.addEventListener('waiting', () => console.log('[yt-player] waiting'));
+    v.addEventListener('canplay', () => console.log('[yt-player] canplay'));
     
     // Initialize Plyr
     const player = new Plyr(v, {
