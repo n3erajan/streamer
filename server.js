@@ -7,8 +7,14 @@ const { execFile } = require('child_process')
 const app = express()
 app.set('view engine', 'ejs')
 app.set('views', path.join(__dirname, 'views'))
+app.enable('trust proxy')
 const PORT = 8080
-const BASE_URL = 'http://localhost:8080'
+
+function getBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol
+  const host = req.headers['x-forwarded-host'] || req.headers.host
+  return `${proto}://${host}`
+}
 const MOVIES_DIR = path.join(__dirname, 'movies')
 
 // Ensure movies directory exists
@@ -1310,7 +1316,7 @@ async function scanMovies() {
       year,
       thumb: thumbFile ? `/movies/${path.basename(thumbFile)}` : null,
       video: `/movies/${encodeURIComponent(file)}`,
-      pageUrl: `${BASE_URL}/watch/${slug}`,
+      pageUrl: `/watch/${slug}`,
     })
   }
 
@@ -1471,7 +1477,7 @@ app.get('/api/hls/:slug.m3u8', async (req, res) => {
 
   const playlist = fs.readFileSync(playlistPath, 'utf8')
   // Rewrite segment paths to absolute URLs through our proxy
-  const base = `${BASE_URL}/api/hls/${req.params.slug}`
+  const base = `${getBaseUrl(req)}/api/hls/${req.params.slug}`
   const rewritten = playlist.replace(/^(.+\.ts)$/gm, `${base}/$1`)
   res.set('Content-Type', 'application/vnd.apple.mpegurl')
   res.set('Access-Control-Allow-Origin', '*')
@@ -1532,15 +1538,16 @@ app.get('/watch/:slug', async (req, res) => {
   }
 
   const video = status.url
+  const baseUrl = getBaseUrl(req)
 
   res.render('player', {
     title,
     description,
     thumb,
-    pageUrl,
+    pageUrl: `${baseUrl}${pageUrl}`,
     year,
     video,
-    BASE_URL,
+    BASE_URL: baseUrl,
     slug: movie.slug,
   })
 })
@@ -1643,12 +1650,13 @@ app.get('/youtube/watch/:id', async (req, res) => {
   const thumb = info.thumbnail || ytThumb(videoId)
   const description = info.description || ''
   const channel = info.channel || ''
+  const baseUrl = getBaseUrl(req)
 
   res.render('youtube-player', {
     videoId,
     title,
     thumb,
-    pageUrl: `${BASE_URL}/youtube/watch/${videoId}`,
+    pageUrl: `${baseUrl}/youtube/watch/${videoId}`,
     videoUrl: `/youtube-stream/${videoId}.mp4`,
     description,
     channel,
@@ -1656,7 +1664,7 @@ app.get('/youtube/watch/:id', async (req, res) => {
     relatedVideos,
     relatedContinuation,
     formatDuration,
-    BASE_URL,
+    BASE_URL: baseUrl,
   })
 })
 
@@ -1762,7 +1770,7 @@ process.on('uncaughtException', (err) => {
 })
 
 app.listen(PORT, async () => {
-  console.log(`Stream Server running on ${BASE_URL}`)
+  console.log(`Stream Server running on port ${PORT}`)
   console.log(`Serving from: ${MOVIES_DIR}`)
   const movies = await scanMovies()
   console.log(`${movies.length} movie(s) found`)
