@@ -83,10 +83,10 @@ const ytHomeCache = new Map()
 const ytStreamInflight = new Map()
 
 // Global cap on concurrent yt-dlp processes (across ALL videos). Each process
-// holds ~100-150MB for up to 60s; 2 is the safe ceiling on a 512MB instance
-// alongside the Node server itself. Extra callers queue instead of spawning.
+// holds ~100-150MB for up to 60s; 1 is the safe ceiling on a 512MB instance
+// alongside the Node server itself to prevent OOM crashes on Render.
 // Override with YT_DLP_MAX_CONCURRENCY env var.
-const YT_DLP_MAX_CONCURRENCY = Number(process.env.YT_DLP_MAX_CONCURRENCY) || 2
+const YT_DLP_MAX_CONCURRENCY = Number(process.env.YT_DLP_MAX_CONCURRENCY) || 1
 const ytDlpActive = { count: 0, queue: [] }
 function acquireYtDlpSlot() {
   return new Promise((resolve) => {
@@ -129,11 +129,21 @@ function ytThumb(id) {
 // to pass bot detection on datacenter IPs without triggering the login
 // player path.
 const LOGIN_COOKIE_NAMES = new Set([
-  'LOGIN_INFO', 'SID', 'HSID', 'SSID', 'APISID', 'SAPISID',
-  '__Secure-1PSID', '__Secure-3PSID',
-  '__Secure-1PAPISID', '__Secure-3PAPISID',
-  '__Secure-1PSIDTS', '__Secure-3PSIDTS',
-  '__Secure-1PSIDCC', '__Secure-3PSIDCC', 'SIDCC',
+  'LOGIN_INFO',
+  'SID',
+  'HSID',
+  'SSID',
+  'APISID',
+  'SAPISID',
+  '__Secure-1PSID',
+  '__Secure-3PSID',
+  '__Secure-1PAPISID',
+  '__Secure-3PAPISID',
+  '__Secure-1PSIDTS',
+  '__Secure-3PSIDTS',
+  '__Secure-1PSIDCC',
+  '__Secure-3PSIDCC',
+  'SIDCC',
 ])
 
 function stripLoginCookies(rawCookies) {
@@ -491,13 +501,17 @@ let cachedSts = null
 let visitorPromise = null
 
 async function getVisitorDataAndSts(videoId) {
-  if (cachedVisitorData && cachedSts) return { visitorData: cachedVisitorData, sts: cachedSts }
+  if (cachedVisitorData && cachedSts)
+    return { visitorData: cachedVisitorData, sts: cachedSts }
   if (visitorPromise) return visitorPromise
 
   visitorPromise = (async () => {
     try {
       const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
         signal: AbortSignal.timeout(8000),
       })
       const html = await res.text()
@@ -512,10 +526,14 @@ async function getVisitorDataAndSts(videoId) {
       if (stsMatch) cachedSts = parseInt(stsMatch[1], 10)
       // Fallback: extract from ytInitialPlayerResponse
       if (!cachedSts) {
-        const prMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});\s*\n/)
+        const prMatch = html.match(
+          /ytInitialPlayerResponse\s*=\s*({.+?});\s*\n/,
+        )
         if (prMatch) {
           const pr = JSON.parse(prMatch[1])
-          cachedSts = pr?.playbackContext?.contentPlaybackContext?.signatureTimestamp || null
+          cachedSts =
+            pr?.playbackContext?.contentPlaybackContext?.signatureTimestamp ||
+            null
         }
       }
     } catch {
@@ -532,10 +550,11 @@ async function runAndroidVrForStreamUrl(videoId) {
   const cookie = readCookieHeader()
   const headers = {
     'Content-Type': 'application/json',
-    'User-Agent': 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+    'User-Agent':
+      'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
     'X-Youtube-Client-Name': '28',
     'X-Youtube-Client-Version': '1.65.10',
-    'Origin': 'https://www.youtube.com',
+    Origin: 'https://www.youtube.com',
   }
   if (cookie) headers['Cookie'] = cookie
   if (visitorData) headers['X-Goog-Visitor-Id'] = visitorData
@@ -548,7 +567,8 @@ async function runAndroidVrForStreamUrl(videoId) {
         deviceMake: 'Oculus',
         deviceModel: 'Quest 3',
         androidSdkVersion: 32,
-        userAgent: 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+        userAgent:
+          'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
         osName: 'Android',
         osVersion: '12L',
         hl: 'en',
@@ -567,20 +587,20 @@ async function runAndroidVrForStreamUrl(videoId) {
     },
   }
 
-  const res = await fetch(
-    'https://www.youtube.com/youtubei/v1/player',
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(8000),
-    },
-  )
+  const res = await fetch('https://www.youtube.com/youtubei/v1/player', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8000),
+  })
 
   if (!res.ok) throw new Error(`android_vr /player returned HTTP ${res.status}`)
   const data = await res.json()
 
-  console.log(`[android-vr] YouTube response for ${videoId}: playabilityStatus =`, JSON.stringify(data?.playabilityStatus))
+  console.log(
+    `[android-vr] YouTube response for ${videoId}: playabilityStatus =`,
+    JSON.stringify(data?.playabilityStatus),
+  )
 
   const status = data?.playabilityStatus?.status
   if (status !== 'OK') {
@@ -597,8 +617,7 @@ async function runAndroidVrForStreamUrl(videoId) {
     .filter((f) => f.url && f.mimeType?.includes('video/mp4'))
     .sort(
       (a, b) =>
-        (b.width || 0) - (a.width || 0) ||
-        (b.bitrate || 0) - (a.bitrate || 0),
+        (b.width || 0) - (a.width || 0) || (b.bitrate || 0) - (a.bitrate || 0),
     )
 
   if (progressive.length > 0) {
@@ -741,7 +760,8 @@ function getYouTubeInfo(videoId) {
 // picture with no sound. Logged loudly (not silently) when it happens so
 // it's visible instead of mysterious. Ask if you want the proxy extended to
 // mux the two with ffmpeg on the fly; that's a separate, larger change.
-const YT_FORMAT_CHAIN = 'b[height<=360][ext=mp4]/b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
+const YT_FORMAT_CHAIN =
+  'b[height<=360][ext=mp4]/b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 
 // Per-call timeout. With a JS runtime enabled (needed for the n-signature
 // challenge), yt-dlp spawns child processes and generates PO tokens — this is
@@ -751,11 +771,20 @@ const YT_FORMAT_CHAIN = 'b[height<=360][ext=mp4]/b[ext=mp4]/b/bv*[ext=mp4]+ba[ex
 // fallback. Override with the YT_DLP_TIMEOUT_MS env var.
 const YT_DLP_TIMEOUT_MS = Number(process.env.YT_DLP_TIMEOUT_MS) || 60000
 
-async function runYtDlpForStreamUrl(videoId, { timeout = YT_DLP_TIMEOUT_MS } = {}) {
+async function runYtDlpForStreamUrl(
+  videoId,
+  { timeout = YT_DLP_TIMEOUT_MS } = {},
+) {
   await acquireYtDlpSlot()
   try {
     return await new Promise((resolve, reject) => {
-      const args = ['-f', YT_FORMAT_CHAIN, '-g', '--no-warnings', '--no-playlist']
+      const args = [
+        '-f',
+        YT_FORMAT_CHAIN,
+        '-g',
+        '--no-warnings',
+        '--no-playlist',
+      ]
       // Enable a JS runtime so yt-dlp can solve YouTube's n-signature challenge.
       // Without this, yt-dlp 2026.x returns only storyboard formats ("Requested
       // format is not available"). Only `deno` is enabled by default; node is
@@ -827,19 +856,24 @@ async function listYouTubeFormats(videoId, signal) {
   const promise = (async () => {
     await acquireYtDlpSlot()
     try {
-      if (signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
+      if (signal?.aborted)
+        throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
       return await new Promise((resolve, reject) => {
         const child = execFile(
           YT_DLP,
           [
-            '-J', '--no-warnings', '--no-playlist',
-            '--js-runtimes', YT_JS_RUNTIME,
+            '-J',
+            '--no-warnings',
+            '--no-playlist',
+            '--js-runtimes',
+            YT_JS_RUNTIME,
             ...(COOKIES_PATH ? ['--cookies', COOKIES_PATH] : []),
             `https://www.youtube.com/watch?v=${videoId}`,
           ],
           { maxBuffer: 10 * 1024 * 1024, timeout: 60000, signal },
           (err, stdout, stderr) => {
-            if (err) return reject(new Error((stderr || err.message).slice(0, 500)))
+            if (err)
+              return reject(new Error((stderr || err.message).slice(0, 500)))
             try {
               const data = JSON.parse(stdout.trim())
               const formats = (data.formats || []).map((f) => ({
@@ -858,7 +892,10 @@ async function listYouTubeFormats(videoId, signal) {
                 seen.add(f.itag)
                 return true
               })
-              ytFormatsCache.set(videoId, { formats: unique, expires: Date.now() + 15 * 60 * 1000 })
+              ytFormatsCache.set(videoId, {
+                formats: unique,
+                expires: Date.now() + 15 * 60 * 1000,
+              })
               resolve(unique)
             } catch {
               reject(new Error('Failed to parse format list'))
@@ -1649,11 +1686,12 @@ app.get('/api/hls/youtube/:id.m3u8', async (req, res) => {
     res.set('Content-Type', 'application/vnd.apple.mpegurl')
     res.send(
       '#EXTM3U\n' +
-      '#EXT-X-VERSION:3\n' +
-      '#EXT-X-TARGETDURATION:10\n' +
-      '#EXTINF:10.0,\n' +
-      targetUrl + '\n' +
-      '#EXT-X-ENDLIST\n'
+        '#EXT-X-VERSION:3\n' +
+        '#EXT-X-TARGETDURATION:10\n' +
+        '#EXTINF:10.0,\n' +
+        targetUrl +
+        '\n' +
+        '#EXT-X-ENDLIST\n',
     )
   } catch (e) {
     console.error(`[hls] Failed for ${videoId}: ${e.message}`)
@@ -1975,7 +2013,7 @@ app.get('/api/youtube/formats/:videoId', async (req, res) => {
     }
     const controller = new AbortController()
     req.on('close', () => controller.abort())
-    
+
     const formats = await listYouTubeFormats(videoId, controller.signal)
     res.json({ formats })
   } catch (err) {
@@ -1993,16 +2031,20 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
   }
 
   const itag = req.query.itag
-  console.log(`[youtube-stream] Request for ${videoId}${itag ? ` (itag=${itag})` : ''}`)
+  console.log(
+    `[youtube-stream] Request for ${videoId}${itag ? ` (itag=${itag})` : ''}`,
+  )
   try {
     let targetUrl
     if (itag) {
       // Check if we already have this format's URL in the formats cache
       const cached = ytFormatsCache.get(videoId)
       if (cached && cached.expires > Date.now()) {
-        const fmt = cached.formats.find(f => f.itag === itag && f.url)
+        const fmt = cached.formats.find((f) => f.itag === itag && f.url)
         if (fmt && fmt.url) {
-          console.log(`[youtube-stream] Using cached URL for ${videoId} itag=${itag}`)
+          console.log(
+            `[youtube-stream] Using cached URL for ${videoId} itag=${itag}`,
+          )
           targetUrl = fmt.url
         }
       }
@@ -2010,25 +2052,44 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
         // Resolve via yt-dlp — uses the global concurrency pool to prevent
         // orphaned processes from previous videos exhausting system resources.
         const controller = new AbortController()
-        req.on('close', () => { if (!res.headersSent) controller.abort() })
-        
+        req.on('close', () => {
+          if (!res.headersSent) controller.abort()
+        })
+
         await acquireYtDlpSlot()
         try {
-          if (controller.signal.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
+          if (controller.signal.aborted)
+            throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
           targetUrl = await new Promise((resolve, reject) => {
             execFile(
               YT_DLP,
               [
-                '-f', itag, '-g', '--no-warnings', '--no-playlist',
-                '--js-runtimes', YT_JS_RUNTIME,
+                '-f',
+                itag,
+                '-g',
+                '--no-warnings',
+                '--no-playlist',
+                '--js-runtimes',
+                YT_JS_RUNTIME,
                 ...(COOKIES_PATH ? ['--cookies', COOKIES_PATH] : []),
                 `https://www.youtube.com/watch?v=${videoId}`,
               ],
-              { maxBuffer: 10 * 1024 * 1024, timeout: 60000, signal: controller.signal },
+              {
+                maxBuffer: 10 * 1024 * 1024,
+                timeout: 60000,
+                signal: controller.signal,
+              },
               (err, stdout, stderr) => {
-                if (err) return reject(new Error((stderr || err.message).slice(0, 300)))
-                const url = stdout.trim().split('\n').find((l) => l.startsWith('http'))
-                if (!url) return reject(new Error('No URL for requested format'))
+                if (err)
+                  return reject(
+                    new Error((stderr || err.message).slice(0, 300)),
+                  )
+                const url = stdout
+                  .trim()
+                  .split('\n')
+                  .find((l) => l.startsWith('http'))
+                if (!url)
+                  return reject(new Error('No URL for requested format'))
                 resolve(url)
               },
             )
