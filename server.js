@@ -760,8 +760,7 @@ function getYouTubeInfo(videoId) {
 // picture with no sound. Logged loudly (not silently) when it happens so
 // it's visible instead of mysterious. Ask if you want the proxy extended to
 // mux the two with ffmpeg on the fly; that's a separate, larger change.
-const YT_FORMAT_CHAIN =
-  'b[height<=360][ext=mp4]/b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
+const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 
 // Per-call timeout. With a JS runtime enabled (needed for the n-signature
 // challenge), yt-dlp spawns child processes and generates PO tokens — this is
@@ -894,8 +893,9 @@ async function listYouTubeFormats(videoId, signal) {
               })
               ytFormatsCache.set(videoId, {
                 formats: unique,
-                expires: Date.now() + 15 * 60 * 1000,
+                expires: Date.now() + 30 * 60 * 1000,
               })
+              if (ytFormatsCache.size > 20) ytFormatsCache.delete(ytFormatsCache.keys().next().value)
               resolve(unique)
             } catch {
               reject(new Error('Failed to parse format list'))
@@ -959,8 +959,9 @@ async function getYouTubeStreamUrl(videoId) {
     const cacheAndReturn = (result) => {
       ytStreamCache.set(videoId, {
         url: result,
-        expires: Date.now() + 15 * 60 * 1000,
+        expires: Date.now() + 30 * 60 * 1000,
       })
+      if (ytStreamCache.size > 20) ytStreamCache.delete(ytStreamCache.keys().next().value)
       console.log(
         `[yt-stream] Got stream URL for ${videoId}: ${result.video.slice(0, 80)}...`,
       )

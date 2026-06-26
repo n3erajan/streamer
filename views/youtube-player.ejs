@@ -230,6 +230,19 @@
     // started a slow yt-dlp subprocess for 1080p — causing the video to stall.
     v.addEventListener('playing', function onFirstPlay() {
       v.removeEventListener('playing', onFirstPlay);
+      
+      // If the fallback yt-dlp method was used, the stream might ALREADY be 1080p.
+      // If so, cancel the auto-upgrade so we don't cause a blackout refresh.
+      if (v.videoWidth >= 1280) {
+        console.log('[yt-player] Initial video is already HD (' + v.videoWidth + 'x' + v.videoHeight + '), skipping auto-upgrade.');
+        upgradePending = false;
+        
+        const currentSpan = document.getElementById('q-current');
+        if (currentSpan) currentSpan.textContent = (v.videoHeight >= 720 ? v.videoHeight + 'p' : 'HD');
+        
+        return;
+      }
+
       playbackStartedAt = Date.now();
       if (upgradePending) {
         scheduleAutoUpgrade();
