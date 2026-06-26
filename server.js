@@ -451,17 +451,179 @@ async function innertubeNext(videoId, continuationToken = null) {
   return { results, continuationToken: nextToken }
 }
 
-// NOTE: an earlier `innertubePlayer()` (raw InnerTube /player POST, no JS
-// challenge/PO-token solving) lived here. It reliably returned HTTP 400 on
-// real traffic because YouTube now requires a solved JS/PO-token challenge
-// for player responses on most videos — there was nothing to "fix" in it,
-// the approach itself is no longer viable without a challenge solver.
-// Removed rather than left as unused dead code. Stream URLs are now sourced
-// from yt-dlp only (see getYouTubeStreamUrl below), which has its own
-// challenge-solving built in and stays current via auto-update.
+// ═══════════════════════════════════════════════════════════════
+//  Fast stream resolver — direct android_vr InnerTube /player call
+//
+//  Replicates exactly what yt-dlp does with its android_vr client
+//  (its default primary client). android_vr (Oculus Quest) is special:
+//    - REQUIRE_JS_PLAYER: false  → no n-signature transform needed
+//    - No PO token policy        → no pot= required, URLs work directly
+//  One POST to /player, ~200-500ms, no Python, no subprocess, no youtubei.js.
+//  Falls back to yt-dlp for anything this doesn't handle.
+// ═══════════════════════════════════════════════════════════════
+
+function readCookieHeader() {
+  if (!COOKIES_PATH) return undefined
+  try {
+    const content = fs.readFileSync(COOKIES_PATH, 'utf8')
+    return content
+      .split('\n')
+      .filter((l) => l.trim() && !l.startsWith('#'))
+      .map((l) => {
+        const p = l.split('\t')
+        return p.length >= 7 ? `${p[5]}=${p[6]}` : null
+      })
+      .filter(Boolean)
+      .join('; ') || undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Cache the visitor ID so we only fetch the watch page once per process
+let cachedVisitorData = null
+let cachedSts = null
+let visitorPromise = null
+
+async function getVisitorDataAndSts(videoId) {
+  if (cachedVisitorData && cachedSts) return { visitorData: cachedVisitorData, sts: cachedSts }
+  if (visitorPromise) return visitorPromise
+
+  visitorPromise = (async () => {
+    try {
+      const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+        signal: AbortSignal.timeout(8000),
+      })
+      const html = await res.text()
+      // Extract ytcfg from the page
+      const ytcfgMatch = html.match(/ytcfg\.set\s*\(\s*({.+?})\s*\)\s*;/)
+      if (ytcfgMatch) {
+        const ytcfg = JSON.parse(ytcfgMatch[1])
+        cachedVisitorData = ytcfg.VISITOR_DATA || null
+      }
+      // Extract signature timestamp from player URL
+      const stsMatch = html.match(/"signatureTimestamp"\s*:\s*(\d+)/)
+      if (stsMatch) cachedSts = parseInt(stsMatch[1], 10)
+      // Fallback: extract from ytInitialPlayerResponse
+      if (!cachedSts) {
+        const prMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});\s*\n/)
+        if (prMatch) {
+          const pr = JSON.parse(prMatch[1])
+          cachedSts = pr?.playbackContext?.contentPlaybackContext?.signatureTimestamp || null
+        }
+      }
+    } catch {
+      // Non-fatal — proceed without visitor data
+    }
+    return { visitorData: cachedVisitorData, sts: cachedSts }
+  })()
+
+  return visitorPromise
+}
+
+async function runAndroidVrForStreamUrl(videoId) {
+  const { visitorData, sts } = await getVisitorDataAndSts(videoId)
+  const cookie = readCookieHeader()
+  const headers = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+    'X-Youtube-Client-Name': '28',
+    'X-Youtube-Client-Version': '1.65.10',
+    'Origin': 'https://www.youtube.com',
+  }
+  if (cookie) headers['Cookie'] = cookie
+  if (visitorData) headers['X-Goog-Visitor-Id'] = visitorData
+
+  const body = {
+    context: {
+      client: {
+        clientName: 'ANDROID_VR',
+        clientVersion: '1.65.10',
+        deviceMake: 'Oculus',
+        deviceModel: 'Quest 3',
+        androidSdkVersion: 32,
+        userAgent: 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+        osName: 'Android',
+        osVersion: '12L',
+        hl: 'en',
+        timeZone: 'UTC',
+        utcOffsetMinutes: 0,
+      },
+    },
+    videoId,
+    contentCheckOk: true,
+    racyCheckOk: true,
+    playbackContext: {
+      contentPlaybackContext: {
+        html5Preference: 'HTML5_PREF_WANTS',
+        ...(sts ? { signatureTimestamp: sts } : {}),
+      },
+    },
+  }
+
+  const res = await fetch(
+    'https://www.youtube.com/youtubei/v1/player',
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    },
+  )
+
+  if (!res.ok) throw new Error(`android_vr /player returned HTTP ${res.status}`)
+  const data = await res.json()
+
+  const status = data?.playabilityStatus?.status
+  if (status !== 'OK') {
+    const reason = data?.playabilityStatus?.reason || status
+    throw new Error(`Video not playable: ${reason}`)
+  }
+
+  const streamingData = data?.streamingData
+  if (!streamingData) throw new Error('No streamingData in player response')
+
+  // Pick best progressive (video+audio in one file) mp4 by resolution then bitrate
+  const formats = (streamingData.formats || [])
+    .filter((f) => f.url && f.mimeType?.includes('video/mp4'))
+    .sort(
+      (a, b) =>
+        (b.width || 0) - (a.width || 0) ||
+        (b.bitrate || 0) - (a.bitrate || 0),
+    )
+
+  if (formats.length > 0) {
+    const best = formats[0]
+    console.log(
+      `[android-vr] Got direct stream for ${videoId}: ${best.qualityLabel} ${best.mimeType?.split(';')[0]}`,
+    )
+    return { video: best.url, audio: null }
+  }
+
+  // Some videos only return adaptive (separate video+audio) or HLS
+  const hls = streamingData.hlsManifestUrl
+  if (hls) {
+    console.log(`[android-vr] Got HLS manifest for ${videoId}`)
+    return { video: hls, audio: null }
+  }
+
+  // Last resort: pick best adaptive video — caller will have no audio
+  const adaptive = (streamingData.adaptiveFormats || [])
+    .filter((f) => f.url && f.mimeType?.includes('video/mp4'))
+    .sort((a, b) => (b.width || 0) - (a.width || 0))
+  if (adaptive.length > 0) {
+    console.warn(
+      `[android-vr] ${videoId}: only adaptive formats available, audio will be missing`,
+    )
+    return { video: adaptive[0].url, audio: null }
+  }
+
+  throw new Error('No usable stream format found in android_vr response')
+}
 
 // ═══════════════════════════════════════════════════════════════
-//  Public API functions — InnerTube /next for info, yt-dlp for streams
+//  Public API functions — InnerTube /next for info, android_vr/yt-dlp for streams
 // ═══════════════════════════════════════════════════════════════
 
 // Single /next call that returns BOTH video info AND related videos.
@@ -707,28 +869,38 @@ async function getYouTubeStreamUrl(videoId) {
 
     let lastErr
 
-    // Attempt 1
+    // Attempt 1 — android_vr direct /player call (~200-500ms, no subprocess)
+    try {
+      return cacheAndReturn(await runAndroidVrForStreamUrl(videoId))
+    } catch (e) {
+      lastErr = e
+      console.warn(
+        `[yt-stream] Attempt 1 (android_vr) failed for ${videoId}: ${e.message.slice(0, 200)} — falling back to yt-dlp`,
+      )
+    }
+
+    // Attempt 2 — yt-dlp subprocess (slower, last resort)
     try {
       return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
     } catch (e) {
       lastErr = e
       console.warn(
-        `[yt-stream] Attempt 1 failed for ${videoId}: ${e.message.slice(0, 200)}`,
+        `[yt-stream] Attempt 2 (yt-dlp) failed for ${videoId}: ${e.message.slice(0, 200)}`,
       )
     }
 
-    // Attempt 2 — plain retry. Both the bot-check and format-availability
+    // Attempt 3 — plain retry. Both the bot-check and format-availability
     // failures are sometimes transient per-request rather than per-video.
     try {
       return cacheAndReturn(await runYtDlpForStreamUrl(videoId))
     } catch (e) {
       lastErr = e
       console.warn(
-        `[yt-stream] Attempt 2 (retry) failed for ${videoId}: ${e.message.slice(0, 200)}`,
+        `[yt-stream] Attempt 3 (yt-dlp retry) failed for ${videoId}: ${e.message.slice(0, 200)}`,
       )
     }
 
-    // Attempt 3 — if this smells like a stale-binary problem specifically
+    // Attempt 4 — if this smells like a stale-binary problem specifically
     // (not a cookie/auth problem), try updating yt-dlp once, then retry.
     const looksStale =
       /Requested format is not available|Unable to extract|unsupported url/i.test(
@@ -1607,7 +1779,7 @@ app.get('/youtube/watch/:id', async (req, res) => {
 
   // Pre-warm the stream cache in the background — don't await it.
   // By the time the browser parses the HTML and requests the stream URL,
-  // yt-dlp will likely have already finished.
+  // the cache will likely already be populated (android_vr is ~0.2-0.5s).
   console.log(`[youtube/watch] Pre-warming stream for ${videoId}`)
   getYouTubeStreamUrl(videoId).catch((e) =>
     console.log(`[youtube/watch] Pre-warm failed for ${videoId}: ${e.message}`),
@@ -1704,7 +1876,7 @@ app.get('/api/youtube/related', async (req, res) => {
   }
 })
 
-// --- YouTube stream proxy ---
+// --- YouTube stream redirect ---
 
 app.get('/youtube-stream/:id.mp4', async (req, res) => {
   const videoId = req.params.id
@@ -1717,35 +1889,9 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
     const streamUrls = await getYouTubeStreamUrl(videoId)
     const targetUrl = streamUrls.video
     console.log(
-      `[youtube-stream] Proxying ${videoId} from ${targetUrl.slice(0, 80)}...`,
+      `[youtube-stream] Redirecting ${videoId} to ${targetUrl.slice(0, 80)}...`,
     )
-
-    // Forward range header for seeking support
-    const headers = {}
-    if (req.headers.range) {
-      headers['Range'] = req.headers.range
-    }
-
-    const upstream = await fetch(targetUrl, { headers })
-
-    // Forward status (200 or 206 for partial content)
-    res.status(upstream.status)
-
-    // Forward relevant headers
-    const fwd = [
-      'content-type',
-      'content-length',
-      'content-range',
-      'accept-ranges',
-    ]
-    for (const h of fwd) {
-      const val = upstream.headers.get(h)
-      if (val) res.setHeader(h, val)
-    }
-
-    // Pipe the stream
-    const { Readable } = require('stream')
-    Readable.fromWeb(upstream.body).pipe(res)
+    return res.redirect(302, targetUrl)
   } catch (e) {
     console.error(`[youtube-stream] Failed for ${videoId}: ${e.message}`)
     if (!res.headersSent) {
