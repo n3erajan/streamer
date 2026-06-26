@@ -104,10 +104,14 @@
       width:100%;padding:8px 12px 8px 36px;
       border-radius:8px;border:1px solid var(--surface-border);
       background:var(--surface);color:var(--text);
-      font-family:inherit;font-size:0.85rem;
+      font-family:inherit;font-size:16px; /* prevent iOS zoom */
       outline:none;transition:border-color 0.2s;
     }
     .nav-search input:focus{border-color:var(--accent)}
+
+    @media(max-width:600px){
+      .nav-search { display: none; } /* Hide in navbar on very small screens, let them use search page */
+    }
 
     .nav-links{display:flex;gap:2px}
     .nav-link{

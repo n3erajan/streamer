@@ -1927,6 +1927,7 @@ app.get('/youtube/watch/:id', async (req, res) => {
     relatedContinuation,
     formatDuration,
     BASE_URL: baseUrl,
+    showYoutubeSearch: true,
   })
 })
 
