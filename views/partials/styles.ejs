@@ -92,6 +92,23 @@
     }
     .nav-logo-mark svg{width:12px;height:12px;fill:#fff}
 
+    .nav-search{
+      flex:1;max-width:480px;margin:0 24px;
+      position:relative;display:flex;align-items:center;
+    }
+    .nav-search-icon{
+      position:absolute;left:12px;pointer-events:none;
+      color:var(--text-muted);
+    }
+    .nav-search input{
+      width:100%;padding:8px 12px 8px 36px;
+      border-radius:8px;border:1px solid var(--surface-border);
+      background:var(--surface);color:var(--text);
+      font-family:inherit;font-size:0.85rem;
+      outline:none;transition:border-color 0.2s;
+    }
+    .nav-search input:focus{border-color:var(--accent)}
+
     .nav-links{display:flex;gap:2px}
     .nav-link{
       text-decoration:none;

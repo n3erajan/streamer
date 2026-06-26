@@ -22,6 +22,8 @@
   <meta name="application-name" content="YouTube" />
   <meta property="og:provider" content="YOUTUBE" />
 
+  <link rel="alternate" type="application/x-mpegURL" href="/api/hls/youtube/<%= videoId %>.m3u8">
+
   <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
   <%- include('partials/styles') %>
   <style>
@@ -35,6 +37,7 @@
       border-radius:var(--radius-lg) var(--radius-lg) 0 0;
       overflow:hidden;
       box-shadow:0 16px 48px rgba(0,0,0,0.7);
+      position:relative;
     }
     video{width:100%;display:block;background:#000}
 
@@ -85,42 +88,7 @@
     .btn-share:hover{background:var(--accent-hover)}
     .btn-share:active{transform:scale(0.96)}
 
-    /* ── Up Next card ── */
-    .up-next{
-      margin-top:20px;
-      padding:18px;
-      background:rgba(255,255,255,0.03);
-      border-radius:var(--radius);
-      border:1px solid var(--surface-border);
-    }
-    .up-next-label{
-      font-size:0.72rem;
-      font-weight:700;
-      color:var(--text-muted);
-      text-transform:uppercase;
-      letter-spacing:0.08em;
-      margin-bottom:12px;
-    }
-    .up-next-inner{
-      display:flex;gap:16px;align-items:center;flex-wrap:wrap;
-    }
-    .up-next-thumb{
-      width:150px;border-radius:var(--radius);aspect-ratio:16/9;object-fit:cover;
-    }
-    .up-next-meta{flex:1;min-width:180px}
-    .up-next-title{font-weight:600;font-size:0.95rem;margin-bottom:3px;color:var(--text)}
-    .up-next-channel{color:var(--text-secondary);font-size:0.82rem;margin-bottom:12px}
-    .up-next-btn{
-      display:inline-block;
-      background:var(--accent);
-      color:#fff;text-decoration:none;
-      padding:9px 22px;border-radius:var(--radius);
-      font-family:inherit;font-weight:600;font-size:0.85rem;
-      transition:background 0.2s, transform 0.15s;
-    }
-    .up-next-btn:hover{background:var(--accent-hover)}
-    .up-next-btn:active{transform:scale(0.97)}
-
+    @media(max-width:768px){
     /* ── Related ── */
     .related{
       margin-top:48px;
@@ -142,12 +110,17 @@
       .video-info h2{font-size:1.15rem;padding-right:100px}
       .btn-share{right:20px;top:20px;padding:7px 14px}
       .related{padding:0 20px 60px}
-      .up-next-thumb{width:120px}
     }
-    @media(max-width:480px){
-      .up-next-inner{flex-direction:column;align-items:flex-start}
-      .up-next-thumb{width:100%}
-    }
+
+    /* ── Fullscreen overrides ── */
+    .yt-player-fullscreen .global-nav,
+    .yt-player-fullscreen .related,
+    .yt-player-fullscreen .video-info,
+    .yt-player-fullscreen footer,
+    .yt-player-fullscreen .main-container > :not(.cinema-wrap) { display:none; }
+    .yt-player-fullscreen .cinema-wrap{max-width:none;margin:0}
+    .yt-player-fullscreen .video-frame{border-radius:0}
+    .yt-player-fullscreen .main-container{height:100vh;justify-content:center}
 
     .loader-container {
       display: flex;
@@ -234,6 +207,279 @@
       controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
       autoplay: true
     });
+
+    // ── Quality picker ───────────────────────────────────────────────────
+    const videoId = '<%= videoId %>';
+    let formats = [];
+    let currentItag = null;
+    let upgradePending = false; // true once formats are loaded, pending auto-upgrade after playback starts
+    let playbackStartedAt = 0;  // timestamp when the 360p stream first started playing
+    let upgradeTimer = null;    // delayed auto-upgrade timer (cleared on navigation)
+
+    // Minimum seconds of stable 360p playback before auto-upgrading.
+    // This ensures the user sees the video playing immediately, and the
+    // upgrade only happens once the initial stream is stable.
+    const AUTO_UPGRADE_DELAY_S = 5;
+
+    // Auto-upgrade fires after the 360p stream has been playing stably for
+    // AUTO_UPGRADE_DELAY_S seconds. The old code upgraded on the FIRST
+    // 'playing' event, which immediately aborted the working 360p stream and
+    // started a slow yt-dlp subprocess for 1080p — causing the video to stall.
+    v.addEventListener('playing', function onFirstPlay() {
+      v.removeEventListener('playing', onFirstPlay);
+      playbackStartedAt = Date.now();
+      if (upgradePending) {
+        scheduleAutoUpgrade();
+      }
+    });
+
+    function scheduleAutoUpgrade() {
+      if (upgradeTimer) return; // already scheduled
+      const elapsed = (Date.now() - playbackStartedAt) / 1000;
+      const remaining = Math.max(0, AUTO_UPGRADE_DELAY_S - elapsed);
+      console.log('[yt-player] Auto-upgrade scheduled in', remaining.toFixed(1), 's');
+      upgradeTimer = setTimeout(() => {
+        upgradeTimer = null;
+        autoUpgrade();
+      }, remaining * 1000);
+    }
+
+    // Inject quality button + menu into Plyr's control bar after it renders
+    function injectQualityUI() {
+      const ctrls = document.querySelector('.plyr__controls');
+      if (!ctrls) { setTimeout(injectQualityUI, 100); return }
+
+      // Insert before the fullscreen button
+      const fsBtn = ctrls.querySelector('[data-plyr="fullscreen"]');
+      const ref = fsBtn || ctrls.lastElementChild;
+
+      // Build the quality button (settings gear)
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'plyr__control';
+      btn.id = 'btn-quality';
+      btn.setAttribute('aria-label', 'Quality');
+      btn.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>' +
+        '<span id="q-current" style="font-size:0.7rem;margin-left:2px">360p</span>';
+
+      // Build the dropdown menu
+      const menu = document.createElement('div');
+      menu.id = 'quality-menu';
+      menu.className = 'quality-menu';
+      menu.innerHTML = '<div class="quality-menu-loading" id="q-loading">Loading…</div>';
+
+      // Wrap them in a container
+      const wrap = document.createElement('div');
+      wrap.className = 'plyr__controls__item quality-wrap';
+      wrap.appendChild(btn);
+      wrap.appendChild(menu);
+      ctrls.insertBefore(wrap, ref);
+
+      // Toggle on button click
+      btn.addEventListener('click', (e) => { e.stopPropagation(); menu.classList.toggle('open') });
+
+      // Close on outside click
+      document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) menu.classList.remove('open');
+      }, true);
+
+      // Fetch formats in background
+      fetchFormats();
+    }
+
+    // Append quality styles dynamically
+    const qStyle = document.createElement('style');
+    qStyle.textContent = `
+      .quality-wrap{position:relative}
+      .quality-menu{
+        position:absolute;bottom:100%;right:-8px;margin-bottom:8px;
+        background:rgba(24,24,28,0.96);border:1px solid rgba(255,255,255,0.08);
+        border-radius:10px;padding:6px 0;min-width:170px;
+        box-shadow:0 8px 32px rgba(0,0,0,0.6);display:none;
+        z-index:30;max-height:260px;overflow-y:auto;
+        backdrop-filter:blur(16px);
+      }
+      .quality-menu.open{display:block}
+      .quality-menu-item{
+        display:flex;align-items:center;gap:6px;padding:7px 14px;cursor:pointer;
+        font-size:0.82rem;color:rgba(255,255,255,0.9);transition:background 0.1s;
+        white-space:nowrap;
+      }
+      .quality-menu-item:hover{background:rgba(255,255,255,0.1)}
+      .quality-menu-item .q-label{font-weight:600;flex:1}
+      .quality-menu-item .q-check{width:16px;text-align:center;flex-shrink:0;font-size:0.75rem}
+      .quality-menu-item.active{background:var(--accent);color:#fff}
+      .quality-menu-loading{padding:14px 16px;text-align:center;color:rgba(255,255,255,0.45);font-size:0.82rem}
+      .quality-menu-error{padding:14px 16px;text-align:center;color:var(--accent);font-size:0.8rem}
+    `;
+    document.head.appendChild(qStyle);
+    injectQualityUI();
+
+    // Fetch formats from API — stores them for the quality menu and flags
+    // that auto-upgrade should happen once the video starts playing at 360p.
+    async function fetchFormats() {
+      const loading = document.getElementById('q-loading');
+      try {
+        const res = await fetch('/api/youtube/formats/' + videoId);
+        const data = await res.json();
+        if (!data.formats || !data.formats.length) {
+          if (loading) loading.textContent = 'No formats';
+          return;
+        }
+        formats = data.formats;
+        renderQualityMenu();
+        upgradePending = true;
+
+        // Pre-warm: start resolving the best upgrade URL in the background
+        // so it's cached on the server by the time autoUpgrade fires.
+        const best = pickBestUpgrade();
+        if (best && !best.url) {
+          console.log('[yt-player] Pre-warming upgrade URL for itag', best.itag, best.quality);
+          fetch('/youtube-stream/' + videoId + '.mp4?itag=' + best.itag + '&json=1').catch(() => {});
+        }
+
+        // If video is already playing (formats loaded very fast), schedule
+        // the delayed upgrade instead of upgrading immediately.
+        if (playbackStartedAt > 0) {
+          scheduleAutoUpgrade();
+        }
+      } catch (e) {
+        if (loading) loading.textContent = 'Error';
+      }
+    }
+
+    // Pick the best upgrade candidate (highest quality with video+audio, above 360p).
+    // Extracted into a helper so both fetchFormats (pre-warm) and autoUpgrade use
+    // the same logic.
+    function pickBestUpgrade() {
+      const candidates = formats.filter(f => f.hasVideo && f.hasAudio);
+      if (!candidates.length) return null;
+
+      const tiers = {};
+      for (const f of candidates) {
+        const key = f.quality;
+        if (!tiers[key] || (f.filesize && (!tiers[key].filesize || f.filesize > tiers[key].filesize))) {
+          tiers[key] = f;
+        }
+      }
+
+      const sorted = Object.values(tiers).sort((a, b) => {
+        const ha = parseInt(a.quality) || 0;
+        const hb = parseInt(b.quality) || 0;
+        return hb - ha;
+      });
+
+      const best = sorted[0];
+      if (!best || (parseInt(best.quality) || 0) <= 360) return null;
+      return best;
+    }
+
+    function autoUpgrade() {
+      upgradePending = false; // only upgrade once per video
+
+      const best = pickBestUpgrade();
+      if (!best) return;
+
+      // Only auto-upgrade if the format has a pre-resolved URL (from yt-dlp's
+      // -J output). If it doesn't, the server would need to spawn a fresh
+      // yt-dlp process (30-60s) which would stall playback. The user can still
+      // manually pick quality from the menu — that's an explicit action where
+      // a brief wait is acceptable.
+      if (best.url) {
+        console.log('[yt-player] Auto-upgrading to', best.quality, '(direct URL available)');
+        selectQuality(best.itag, best.quality);
+      } else {
+        console.log('[yt-player] Skipping auto-upgrade to', best.quality, '(no direct URL, would need yt-dlp subprocess)');
+      }
+    }
+
+    function renderQualityMenu() {
+      const menu = document.getElementById('quality-menu');
+      if (!menu) return;
+
+      const candidates = formats.filter(f => f.hasVideo && f.hasAudio);
+
+      // Group by quality, pick best per tier
+      const tiers = {};
+      for (const f of candidates) {
+        const key = f.quality;
+        if (!tiers[key] || (f.filesize && (!tiers[key].filesize || f.filesize > tiers[key].filesize))) {
+          tiers[key] = f;
+        }
+      }
+
+      const sorted = Object.values(tiers).sort((a, b) => {
+        const ha = parseInt(a.quality) || 0;
+        const hb = parseInt(b.quality) || 0;
+        return hb - ha;
+      });
+
+      let html = '';
+      for (const f of sorted) {
+        const active = f.itag === currentItag ? 'active' : '';
+        const check = f.itag === currentItag ? '✓' : '';
+        html += '<div class="quality-menu-item ' + active + '" data-itag="' + f.itag + '" data-quality="' + f.quality + '">';
+        html += '<span class="q-check">' + check + '</span>';
+        html += '<span class="q-label">' + f.quality + '</span>';
+        html += '</div>';
+      }
+      menu.innerHTML = html || '<div class="quality-menu-error">No playable formats</div>';
+
+      menu.querySelectorAll('.quality-menu-item').forEach(el => {
+        el.addEventListener('click', () => {
+          selectQuality(el.dataset.itag, el.dataset.quality);
+        });
+      });
+    }
+
+    function selectQuality(itag, quality) {
+      if (itag === currentItag) return;
+      currentItag = itag;
+      const currentSpan = document.getElementById('q-current');
+      if (currentSpan) currentSpan.textContent = quality;
+
+      const menu = document.getElementById('quality-menu');
+      if (menu) menu.classList.remove('open');
+
+      // Cancel any pending auto-upgrade — the user made an explicit choice
+      if (upgradeTimer) { clearTimeout(upgradeTimer); upgradeTimer = null; }
+      upgradePending = false;
+
+      // Fetch the redirect URL in the background while the current video keeps playing
+      const targetUrl = '/youtube-stream/' + videoId + '.mp4?itag=' + itag + '&json=1';
+      console.log('[yt-player] Resolving new quality URL in background...');
+      
+      fetch(targetUrl)
+        .then(res => res.json())
+        .then(data => {
+          if (!data.url) throw new Error('No URL returned');
+          console.log('[yt-player] New quality URL resolved. Switching now.');
+          const seekTime = v.currentTime || 0;
+          const wasPlaying = !v.paused;
+
+          // data.url contains the final resolved URL
+          v.src = data.url;
+
+          // Resume from saved position once the new source is ready
+          v.addEventListener('loadedmetadata', function onReady() {
+            v.removeEventListener('loadedmetadata', onReady);
+            v.currentTime = seekTime;
+            if (wasPlaying) v.play().catch(() => {});
+          });
+        })
+        .catch(err => {
+          console.error('[yt-player] Failed to switch quality:', err);
+        });
+    }
+
+    // Fullscreen — hide nav, search, info, related when video is fullscreen
+    document.addEventListener('fullscreenchange', () => {
+      document.body.classList.toggle('yt-player-fullscreen', !!document.fullscreenElement)
+    })
+    document.addEventListener('webkitfullscreenchange', () => {
+      document.body.classList.toggle('yt-player-fullscreen', !!document.webkitFullscreenElement)
+    })
 
     // Infinite scroll for related videos
     document.addEventListener('DOMContentLoaded', () => {

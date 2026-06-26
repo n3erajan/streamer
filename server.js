@@ -466,15 +466,20 @@ function readCookieHeader() {
   if (!COOKIES_PATH) return undefined
   try {
     const content = fs.readFileSync(COOKIES_PATH, 'utf8')
-    return content
-      .split('\n')
-      .filter((l) => l.trim() && !l.startsWith('#'))
-      .map((l) => {
-        const p = l.split('\t')
-        return p.length >= 7 ? `${p[5]}=${p[6]}` : null
-      })
-      .filter(Boolean)
-      .join('; ') || undefined
+    const lines = content.split('\n')
+    const cookieParts = []
+    for (const line of lines) {
+      if (!line || line.startsWith('#')) continue
+      const parts = line.split('\t')
+      if (parts.length >= 7) {
+        // yt-dlp can update the file with \r\n line endings. We MUST strip \r
+        // otherwise Node's fetch will throw 'Invalid character in header content'.
+        const name = parts[5].trim()
+        const value = parts[6].replace(/\r$/, '')
+        cookieParts.push(`${name}=${value}`)
+      }
+    }
+    return cookieParts.join('; ') || undefined
   } catch {
     return undefined
   }
@@ -575,17 +580,20 @@ async function runAndroidVrForStreamUrl(videoId) {
   if (!res.ok) throw new Error(`android_vr /player returned HTTP ${res.status}`)
   const data = await res.json()
 
+  console.log(`[android-vr] YouTube response for ${videoId}: playabilityStatus =`, JSON.stringify(data?.playabilityStatus))
+
   const status = data?.playabilityStatus?.status
   if (status !== 'OK') {
     const reason = data?.playabilityStatus?.reason || status
     throw new Error(`Video not playable: ${reason}`)
   }
 
-  const streamingData = data?.streamingData
-  if (!streamingData) throw new Error('No streamingData in player response')
+  const sd = data?.streamingData
+  if (!sd) throw new Error('No streamingData in player response')
 
-  // Pick best progressive (video+audio in one file) mp4 by resolution then bitrate
-  const formats = (streamingData.formats || [])
+  // ── Priority 1: Progressive mp4 (video+audio in one file) ────────────────
+  // Lowest quality = fastest initial load; autoUpgrade handles the rest.
+  const progressive = (sd.formats || [])
     .filter((f) => f.url && f.mimeType?.includes('video/mp4'))
     .sort(
       (a, b) =>
@@ -593,30 +601,21 @@ async function runAndroidVrForStreamUrl(videoId) {
         (b.bitrate || 0) - (a.bitrate || 0),
     )
 
-  if (formats.length > 0) {
-    const best = formats[0]
+  if (progressive.length > 0) {
+    // Pick the LOWEST progressive format for the default stream
+    // so the video starts playing as fast as possible.
+    const lowest = progressive[progressive.length - 1]
     console.log(
-      `[android-vr] Got direct stream for ${videoId}: ${best.qualityLabel} ${best.mimeType?.split(';')[0]}`,
+      `[android-vr] Got progressive stream for ${videoId}: ${lowest.qualityLabel}`,
     )
-    return { video: best.url, audio: null }
+    return { video: lowest.url, audio: null, type: 'progressive' }
   }
 
-  // Some videos only return adaptive (separate video+audio) or HLS
-  const hls = streamingData.hlsManifestUrl
-  if (hls) {
-    console.log(`[android-vr] Got HLS manifest for ${videoId}`)
-    return { video: hls, audio: null }
-  }
-
-  // Last resort: pick best adaptive video — caller will have no audio
-  const adaptive = (streamingData.adaptiveFormats || [])
-    .filter((f) => f.url && f.mimeType?.includes('video/mp4'))
-    .sort((a, b) => (b.width || 0) - (a.width || 0))
-  if (adaptive.length > 0) {
-    console.warn(
-      `[android-vr] ${videoId}: only adaptive formats available, audio will be missing`,
-    )
-    return { video: adaptive[0].url, audio: null }
+  // ── Priority 2: HLS master playlist ─────────────────────────────────────
+  // Only used when progressive is unavailable. Needs hls.js or Safari.
+  if (sd.hlsManifestUrl) {
+    console.log(`[android-vr] Got HLS manifest for ${videoId} (no progressive)`)
+    return { video: sd.hlsManifestUrl, audio: null, type: 'hls' }
   }
 
   throw new Error('No usable stream format found in android_vr response')
@@ -742,7 +741,7 @@ function getYouTubeInfo(videoId) {
 // picture with no sound. Logged loudly (not silently) when it happens so
 // it's visible instead of mysterious. Ask if you want the proxy extended to
 // mux the two with ffmpeg on the fly; that's a separate, larger change.
-const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
+const YT_FORMAT_CHAIN = 'b[height<=360][ext=mp4]/b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 
 // Per-call timeout. With a JS runtime enabled (needed for the n-signature
 // challenge), yt-dlp spawns child processes and generates PO tokens — this is
@@ -811,6 +810,70 @@ async function runYtDlpForStreamUrl(videoId, { timeout = YT_DLP_TIMEOUT_MS } = {
   } finally {
     releaseYtDlpSlot()
   }
+}
+
+// ── Format listing (for quality selector) ────────────────────────────────
+
+const ytFormatsCache = new Map()
+const ytFormatsInflight = new Map()
+
+async function listYouTubeFormats(videoId, signal) {
+  const cached = ytFormatsCache.get(videoId)
+  if (cached && cached.expires > Date.now()) return cached.formats
+
+  const existing = ytFormatsInflight.get(videoId)
+  if (existing) return existing
+
+  const promise = (async () => {
+    await acquireYtDlpSlot()
+    try {
+      if (signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
+      return await new Promise((resolve, reject) => {
+        const child = execFile(
+          YT_DLP,
+          [
+            '-J', '--no-warnings', '--no-playlist',
+            '--js-runtimes', YT_JS_RUNTIME,
+            ...(COOKIES_PATH ? ['--cookies', COOKIES_PATH] : []),
+            `https://www.youtube.com/watch?v=${videoId}`,
+          ],
+          { maxBuffer: 10 * 1024 * 1024, timeout: 60000, signal },
+          (err, stdout, stderr) => {
+            if (err) return reject(new Error((stderr || err.message).slice(0, 500)))
+            try {
+              const data = JSON.parse(stdout.trim())
+              const formats = (data.formats || []).map((f) => ({
+                itag: f.format_id,
+                quality: f.format_note || (f.height ? `${f.height}p` : '?'),
+                ext: f.ext,
+                hasVideo: f.vcodec !== 'none',
+                hasAudio: f.acodec !== 'none',
+                url: f.url || null,
+                filesize: f.filesize || f.filesize_approx || null,
+              }))
+              // Deduplicate by itag
+              const seen = new Set()
+              const unique = formats.filter((f) => {
+                if (seen.has(f.itag)) return false
+                seen.add(f.itag)
+                return true
+              })
+              ytFormatsCache.set(videoId, { formats: unique, expires: Date.now() + 15 * 60 * 1000 })
+              resolve(unique)
+            } catch {
+              reject(new Error('Failed to parse format list'))
+            }
+          },
+        )
+      })
+    } finally {
+      releaseYtDlpSlot()
+    }
+  })()
+
+  ytFormatsInflight.set(videoId, promise)
+  promise.finally(() => ytFormatsInflight.delete(videoId))
+  return promise
 }
 
 // YouTube's signature/N-challenge logic changes often; a yt-dlp binary that
@@ -923,6 +986,8 @@ async function getYouTubeStreamUrl(videoId) {
     throw lastErr
   })()
 
+  // Register BEFORE the promise starts resolving so concurrent callers
+  // always find the in-flight entry and never spawn duplicates.
   ytStreamInflight.set(videoId, fetchPromise)
   // Always clear the in-flight entry on settle so a failed fetch can be retried
   // by a later request (don't cache rejections).
@@ -1571,6 +1636,31 @@ app.get('/movies/:file', async (req, res, next) => {
 
 app.use('/movies', express.static(MOVIES_DIR, { dotfiles: 'allow' }))
 
+// --- YouTube HLS playlist for Rave ---
+// Must be before the generic /api/hls/:slug.m3u8 route
+app.get('/api/hls/youtube/:id.m3u8', async (req, res) => {
+  const videoId = req.params.id
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return res.status(400).send('Invalid video ID')
+  }
+  try {
+    const streamUrls = await getYouTubeStreamUrl(videoId)
+    const targetUrl = streamUrls.video || streamUrls
+    res.set('Content-Type', 'application/vnd.apple.mpegurl')
+    res.send(
+      '#EXTM3U\n' +
+      '#EXT-X-VERSION:3\n' +
+      '#EXT-X-TARGETDURATION:10\n' +
+      '#EXTINF:10.0,\n' +
+      targetUrl + '\n' +
+      '#EXT-X-ENDLIST\n'
+    )
+  } catch (e) {
+    console.error(`[hls] Failed for ${videoId}: ${e.message}`)
+    res.status(500).send('Failed to create HLS playlist')
+  }
+})
+
 // --- HLS streaming (YouTube-style segments) ---
 // Converts MP4 into tiny .ts segments via ffmpeg -c copy (remux only, no re-encode).
 // The first request kicks off ffmpeg; segments are served as they're generated.
@@ -1829,7 +1919,7 @@ app.get('/youtube/watch/:id', async (req, res) => {
     title,
     thumb,
     pageUrl: `${baseUrl}/youtube/watch/${videoId}`,
-    videoUrl: `/youtube-stream/${videoId}.mp4`,
+    videoUrl: `/youtube-stream/${videoId}.mp4?_t=${Date.now()}`,
     description,
     channel,
     info,
@@ -1876,6 +1966,23 @@ app.get('/api/youtube/related', async (req, res) => {
   }
 })
 
+app.get('/api/youtube/formats/:videoId', async (req, res) => {
+  try {
+    const videoId = req.params.videoId
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      return res.status(400).json({ error: 'Invalid video ID' })
+    }
+    const controller = new AbortController()
+    req.on('close', () => controller.abort())
+    
+    const formats = await listYouTubeFormats(videoId, controller.signal)
+    res.json({ formats })
+  } catch (err) {
+    if (err.name === 'AbortError') return res.end()
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // --- YouTube stream redirect ---
 
 app.get('/youtube-stream/:id.mp4', async (req, res) => {
@@ -1884,15 +1991,67 @@ app.get('/youtube-stream/:id.mp4', async (req, res) => {
     return res.status(400).send('Invalid video ID')
   }
 
-  console.log(`[youtube-stream] Request for ${videoId}`)
+  const itag = req.query.itag
+  console.log(`[youtube-stream] Request for ${videoId}${itag ? ` (itag=${itag})` : ''}`)
   try {
-    const streamUrls = await getYouTubeStreamUrl(videoId)
-    const targetUrl = streamUrls.video
+    let targetUrl
+    if (itag) {
+      // Check if we already have this format's URL in the formats cache
+      const cached = ytFormatsCache.get(videoId)
+      if (cached && cached.expires > Date.now()) {
+        const fmt = cached.formats.find(f => f.itag === itag && f.url)
+        if (fmt && fmt.url) {
+          console.log(`[youtube-stream] Using cached URL for ${videoId} itag=${itag}`)
+          targetUrl = fmt.url
+        }
+      }
+      if (!targetUrl) {
+        // Resolve via yt-dlp — uses the global concurrency pool to prevent
+        // orphaned processes from previous videos exhausting system resources.
+        const controller = new AbortController()
+        req.on('close', () => { if (!res.headersSent) controller.abort() })
+        
+        await acquireYtDlpSlot()
+        try {
+          if (controller.signal.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
+          targetUrl = await new Promise((resolve, reject) => {
+            execFile(
+              YT_DLP,
+              [
+                '-f', itag, '-g', '--no-warnings', '--no-playlist',
+                '--js-runtimes', YT_JS_RUNTIME,
+                ...(COOKIES_PATH ? ['--cookies', COOKIES_PATH] : []),
+                `https://www.youtube.com/watch?v=${videoId}`,
+              ],
+              { maxBuffer: 10 * 1024 * 1024, timeout: 60000, signal: controller.signal },
+              (err, stdout, stderr) => {
+                if (err) return reject(new Error((stderr || err.message).slice(0, 300)))
+                const url = stdout.trim().split('\n').find((l) => l.startsWith('http'))
+                if (!url) return reject(new Error('No URL for requested format'))
+                resolve(url)
+              },
+            )
+          })
+        } finally {
+          releaseYtDlpSlot()
+        }
+      }
+    } else {
+      const streamUrls = await getYouTubeStreamUrl(videoId)
+      targetUrl = streamUrls.video
+    }
     console.log(
-      `[youtube-stream] Redirecting ${videoId} to ${targetUrl.slice(0, 80)}...`,
+      `[youtube-stream] Resolved ${videoId} to ${targetUrl.slice(0, 80)}...`,
     )
+    if (req.query.json === '1') {
+      return res.json({ url: targetUrl })
+    }
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+    res.set('Pragma', 'no-cache')
+    res.set('Expires', '0')
     return res.redirect(302, targetUrl)
   } catch (e) {
+    if (e.name === 'AbortError') return res.end()
     console.error(`[youtube-stream] Failed for ${videoId}: ${e.message}`)
     if (!res.headersSent) {
       res.status(500).send(`Failed to fetch YouTube stream: ${e.message}`)
