@@ -770,74 +770,30 @@ const YT_FORMAT_CHAIN = 'b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/best'
 // fallback. Override with the YT_DLP_TIMEOUT_MS env var.
 const YT_DLP_TIMEOUT_MS = Number(process.env.YT_DLP_TIMEOUT_MS) || 60000
 
-async function runYtDlpForStreamUrl(
-  videoId,
-  { timeout = YT_DLP_TIMEOUT_MS } = {},
-) {
-  await acquireYtDlpSlot()
-  try {
-    return await new Promise((resolve, reject) => {
-      const args = [
-        '-f',
-        YT_FORMAT_CHAIN,
-        '-g',
-        '--no-warnings',
-        '--no-playlist',
-      ]
-      // Enable a JS runtime so yt-dlp can solve YouTube's n-signature challenge.
-      // Without this, yt-dlp 2026.x returns only storyboard formats ("Requested
-      // format is not available"). Only `deno` is enabled by default; node is
-      // present on both dev (Node) and Render (Node) but must be opted in.
-      args.push('--js-runtimes', YT_JS_RUNTIME)
-      if (COOKIES_PATH) args.push('--cookies', COOKIES_PATH)
-      args.push(`https://www.youtube.com/watch?v=${videoId}`)
+async function runYtDlpForStreamUrl(videoId) {
+  console.log(`[yt-stream] Resolving stream URL via formats list for ${videoId}`);
+  const formats = await listYouTubeFormats(videoId);
 
-      execFile(
-        YT_DLP,
-        args,
-        { maxBuffer: 10 * 1024 * 1024, timeout },
-        (err, stdout, stderr) => {
-          if (err) {
-            const stderrMsg = (stderr || '').slice(0, 500)
-            // Detect timeout vs real error. When the timeout fires, Node sends
-            // SIGTERM and yt-dlp produces NO stderr — without this check the
-            // logged message is the useless generic "Command failed: ..." wrapper.
-            const timedOut = err.killed && err.signal === 'SIGTERM'
-            if (timedOut) {
-              console.error(
-                `[yt-stream] yt-dlp TIMED OUT after ${timeout}ms for ${videoId} ` +
-                  `(killed via ${err.signal || 'SIGTERM'}). This usually means ` +
-                  `the n-challenge solve + PO-token generation is slow on this IP.`,
-              )
-              return reject(
-                new Error(
-                  `yt-dlp timed out after ${timeout}ms (JS challenge/PO token slow)`,
-                ),
-              )
-            }
-            if (stderrMsg)
-              console.error(`[yt-stream] yt-dlp stderr: ${stderrMsg}`)
-            return reject(new Error(stderrMsg || err.message))
-          }
-          const urls = stdout
-            .trim()
-            .split('\n')
-            .filter((l) => l.startsWith('http'))
-          if (urls.length === 0) return reject(new Error('No stream URL found'))
-          if (urls.length > 1) {
-            console.warn(
-              `[yt-stream] ${videoId}: only got separate video+audio streams ` +
-                `(progressive mp4 unavailable this time). Proxy currently only ` +
-                `serves the video URL — audio will be missing for this request.`,
-            )
-          }
-          resolve({ video: urls[0], audio: urls.length > 1 ? urls[1] : null })
-        },
-      )
-    })
-  } finally {
-    releaseYtDlpSlot()
+  // 1. b[ext=mp4]
+  const progMp4 = formats.filter(f => f.hasVideo && f.hasAudio && f.ext === 'mp4');
+  if (progMp4.length > 0) return { video: progMp4[progMp4.length - 1].url, audio: null };
+
+  // 2. b (any progressive)
+  const progAny = formats.filter(f => f.hasVideo && f.hasAudio);
+  if (progAny.length > 0) return { video: progAny[progAny.length - 1].url, audio: null };
+
+  // 3. bv*[ext=mp4]
+  const vidMp4 = formats.filter(f => f.hasVideo && !f.hasAudio && f.ext === 'mp4');
+  if (vidMp4.length > 0) {
+    console.warn(`[yt-stream] ${videoId}: only got separate video+audio streams (progressive mp4 unavailable). Proxy only serves video.`);
+    return { video: vidMp4[vidMp4.length - 1].url, audio: null };
   }
+
+  // 4. best video
+  const vidAny = formats.filter(f => f.hasVideo);
+  if (vidAny.length > 0) return { video: vidAny[vidAny.length - 1].url, audio: null };
+
+  throw new Error('No stream URL found in formats');
 }
 
 // ── Format listing (for quality selector) ────────────────────────────────
