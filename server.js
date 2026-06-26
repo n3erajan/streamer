@@ -1862,13 +1862,9 @@ app.get('/youtube/watch/:id', async (req, res) => {
     return res.status(400).send('Invalid video ID')
   }
 
-  // Pre-warm the stream cache in the background — don't await it.
-  // By the time the browser parses the HTML and requests the stream URL,
-  // the cache will likely already be populated (android_vr is ~0.2-0.5s).
-  console.log(`[youtube/watch] Pre-warming stream for ${videoId}`)
-  getYouTubeStreamUrl(videoId).catch((e) =>
-    console.log(`[youtube/watch] Pre-warm failed for ${videoId}: ${e.message}`),
-  )
+  // Note: Pre-warming the stream here was removed because on a 1-concurrency system,
+  // if the user navigates away quickly, the detached pre-warm holds the global
+  // yt-dlp slot for 20+ seconds, completely blocking the next video they click.
 
   // Single /next call gets BOTH video info AND related videos (~0.5s)
   let info = {
